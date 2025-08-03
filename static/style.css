@@ -1,0 +1,656 @@
+/* === Base Layout === */
+
+/* === Fullscreen Layout === */
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100vh;
+  background: radial-gradient(circle, #065c2f 60%, #003d1f 100%);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+  font-family: "Noto Sans Symbols", sans-serif;
+  aspect-ratio: 20 / 9;
+  width: 100vw;
+  max-height: 100vh;
+}
+
+/* === Center Game Area === */
+.main-area {
+  width: 100vw;
+  height: 100vh;
+  max-width: calc(100vh * 1.7);  /* roughly limit ultra-wide */
+  max-height: calc(100vw / 1.7); /* limit ultra-tall */
+  display: flex;
+
+  /* flex-direction: column; */
+  justify-content: center; /* vertically center table */
+  align-items: center;
+
+  /* overflow: hidden;
+  padding: 0; */
+}
+
+.layout {
+  width: 100vw;
+  height: 100vh;
+  background-color: inherit; /* optional if html/body are already green */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+
+
+
+.game-container {
+  padding: 0;
+  margin: 0;
+  flex-direction: row;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  position: relative;
+  align-items: center;
+  justify-content: center;
+
+  /* background-color: white; */
+}
+
+
+/* === Table === */
+#center-table {
+  aspect-ratio: 2 / 1;
+  margin: 0 auto;
+  width: 80vw;
+  background: radial-gradient(ellipse at center, #155d25 60%, #0f3c17 100%);
+  border: 0.8vw solid #3b1e0d;
+  border-radius: 20vw;
+  box-shadow: inset 0 0 4vw rgb(0 0 0 / 60%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  margin-right: 18.4vw;
+}
+
+
+.deck-area, .pile-area {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+
+  /* transform: translateX(50%); */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.deck-area { left: 30%; }
+.pile-area { left: 70%; }
+
+
+.pile-card-row {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: -10em;
+  justify-content: center;
+  align-items: center;
+  height: 100%;
+}
+
+.pile-card-stack {
+  position: relative;
+  height: 100%;
+}
+
+.top-played {
+  box-shadow: 0 0 0.4vw rgb(0 0 0 / 40%);
+}
+
+.pile-area .top-played {
+  z-index: 2;
+}
+
+
+
+
+/* === Cards === */
+.card,
+.joker-card {
+  width: 5.5vw;
+  height: calc(5.5vw * 1.39);
+  box-sizing: border-box;
+  display: inline-block;
+  position: relative;
+  margin: 0;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.joker-card {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  background: white;
+  border: 0.001vw solid #ccc;  /* match playing-card’s light gray border */
+  border-radius: 0.3vw;
+
+  /* font-family: "Noto Sans Symbols", sans-serif; */
+  font-family: Arial, Helvetica, sans-serif;
+  font-weight: bold;
+  font-size: 1.2vw;
+  color: black;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.pile-card-stack .card,
+.pile-card-stack .joker-card,
+.pile-card-stack playing-card {
+  position: absolute;
+  top: 0;
+
+  /* transition: left 0.2s ease; */
+}
+
+
+
+
+
+/* === Opponent Boxes (Positioned Relative to Table) === */
+.opponent-box {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  z-index: 5;
+  width: 15vw;
+}
+
+.opponent-box.top {
+  top: 10%;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.opponent-box.left {
+  left: 0%;
+  top: 50%;
+  transform: translateY(-50%) rotate(-90deg);
+  transform-origin: center;
+}
+
+.opponent-box.right {
+  right: 0%;
+  top: 50%;
+  transform: translateY(-50%) rotate(90deg);
+  transform-origin: center;
+}
+
+.player-label {
+  transform: rotate(0deg);
+  font-size: 2vw;
+  font-weight: bold;
+  color: white;
+  text-shadow: 0 0 1vw black;
+  margin-bottom: 0.3vw;
+  text-align: center;
+  white-space: nowrap;
+}
+
+
+
+.opponent-box.left .player-label {
+  /* transform: rotate(90deg); */
+  margin-top: 0.5vw;
+}
+
+.opponent-box.right .player-label {
+  /* transform: rotate(-90deg); */
+  margin-top: 0.5vw;
+
+  /* margin-left: 0.5vw; */
+}
+
+/* Highlight for current player */
+.current-turn {
+  color: gold;
+  text-shadow: 0 0 5px black, 0 0 10px gold;
+}
+
+
+/* === Opponent Cards === */
+.opponent-hand {
+  display: flex;
+  gap: 0.3vw;
+}
+
+.card-back {
+  width: 2.5vw;
+  height: calc(2.5vw * 1.39);
+  border-radius: 2px;
+  background: white url("/static/card-back.svg") center center / cover no-repeat;
+  box-sizing: border-box;
+}
+
+/* === Player Area === */
+#player-area {
+  justify-content: center;
+  align-items: flex-end;
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  position: absolute;
+  bottom: 2%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 1vw;
+}
+
+#player-area .player-hand {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0.9vw;
+  padding: 0;
+  margin: 0;
+}
+
+
+.joker-card[data-joker="♥"] {
+  color: red;
+}
+
+.joker-face {
+  width: 100%;
+  font-size: 1.1vw;
+  line-height: 1.1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* === Selections === */
+.card.selected,
+.joker-card.selected,
+playing-card.selected {
+  transform: scale(1.1);
+  transition: 0.15s ease;
+  margin: 0;
+  z-index: 1;
+}
+
+.draw-selected {
+  transform: scale(1.3);
+  transition: 0.15s ease;
+  margin: 0;
+  z-index: 1;
+}
+
+.card[data-order]::after,
+.joker-card[data-order]::after {
+  content: attr(data-order);
+  position: absolute;
+  top: -0.5vw;
+  right: -0.5vw;
+  width: 2vw;
+  height: 2vw;
+  background: orange;
+  color: white;
+  font-size: 1vw;
+  font-weight: bold;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+
+
+
+/* === End Game Button Override === */
+#end-game {
+  top: 2%;
+  right: 22%;
+  background: #a00;
+  border: 0.1vw solid darkred;
+  border-color: #700;
+  background-color: rgb(150 22 22);
+  border-radius: 0.4vw;
+  font-weight: bold;
+}
+
+a {
+  text-decoration: none;
+}
+
+/* Bottom left: Play */
+#play-selected {
+  bottom: 2%;
+  left: 2%;
+  background-color: #4caf50;
+  border: 0.1vw solid #2e7d32;
+}
+
+/* Bottom right: End Round */
+#end-round {
+  bottom: 2%;
+  right: 22%;
+  background-color: #333;
+  border: 0.1vw solid #666;
+}
+
+
+/* === Buttons === */
+#play-selected,
+#end-round,
+#end-game {
+  position: absolute;
+  z-index: 10;
+  padding: 0.6vw 1.2vw;
+  font-size: 1vw;
+  border-radius: 0.4vw;
+  border: 0.1vw solid;
+  color: white;
+  cursor: pointer;
+}
+
+#play-selected:hover,
+#end-round:hover,
+#end-game:hover {
+  filter: brightness(1.1);
+}
+
+#end-game:hover {
+  background-color: darkred;
+}
+
+#play-selected:disabled,
+#end-round:disabled,
+#end-game:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Optional: hover and disabled styles */
+
+
+
+
+/* === Round Summary Popup Overlay === */
+.round-popup {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100vw; height: 100%;
+  background: rgb(0 0 0 / 40%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+/* === Popup Content Box === */
+
+.popup-content {
+  background: #f7f7f7;
+  padding: 2vw;
+  border-radius: 2vw; /* Match oval feel */
+  box-shadow: 0 0 2vw rgb(0 0 0 / 30%);
+  width: min-content;
+  height: min-content;
+  white-space: nowrap;
+  color: black;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  transform: scale(2);
+
+}
+
+
+
+/* === Close Button === */
+.popup-close {
+  margin-bottom: -1vw;
+  padding: 0.5vw 1.2vw;
+  font-size: 1vw;
+}
+
+
+
+/* === Summary Table === */
+.round-summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1vw;
+}
+
+.round-summary-table th,
+.round-summary-table td {
+  border: 1px solid #ccc;
+  padding: 0.5vw;
+  text-align: center;
+  font-size: 1vw;
+  vertical-align: middle;
+}
+
+.round-summary-table td {
+  vertical-align: middle;
+  height: calc(5.5vw * 0.7);
+}
+
+/* === Force the visual width of the card column to match the scaled hand size === */
+.round-summary-table td:nth-child(2),
+.round-summary-table th:nth-child(2) {
+  width: calc(5.5vw * 0.5 * 5); /* 5 cards, scaled to 0.5 */
+  max-width: calc(5.5vw * 0.5 * 5.72);
+  /* max-width: calc(5.5vw * 0.5 * 6.9); */
+  padding: 0; /* optional: tighter table layout */
+}
+
+/* === Winner/Loser Highlighting === */
+.round-summary-table .winner td:nth-child(3) {
+  background-color: #c3f5c3;
+  font-weight: bold;
+}
+
+.round-summary-table .loser td:nth-child(3) {
+  background-color: #f6c1c1;
+  font-weight: bold;
+}
+
+/* === Scale down both card size AND the space taken by the cell === */
+.card-scale-container {
+  transform: scale(0.5);
+  transform-origin: left center;
+  display: inline-block;
+  width: fit-content;
+  white-space: nowrap;
+  height: 0;
+  line-height: 0;
+}
+
+/* === Card Layout and Size === */
+.card-row {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.5vw;
+  padding: 1vw;
+  justify-content: center;
+  align-items: center;
+}
+
+.card-row playing-card,
+.card-row .joker-card {
+  width: 5.5vw;
+  height: calc(5.5vw * 1.39);
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0;
+}
+
+/* === Preserve Joker Font Scaling === */
+.round-summary-table .joker-card {
+  font-size: initial;
+}
+
+
+/* === Force uniform card alignment in round summary table === */
+.round-summary-table td .card-scale-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* === Log Panel === */
+.log-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: 18.4vw;
+  padding: 0.5vw;
+
+  background: green;
+
+  background: rgb(0 0 0 / 40%);
+  backdrop-filter: blur(0.6em);
+  -webkit-backdrop-filter: blur(0.6em);
+  color: white;
+  font-size: 0.9vw;
+  line-height: 1.4;
+  overflow-y: auto;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+
+  /* border-left: 1px solid #333; */
+  font-family: "Segoe UI", sans-serif;
+}
+
+.log-entry {
+  background: rgb(255 255 255 / 5%);
+  padding: 0.6vw;
+  border-radius: 0.5vw;
+}
+
+.log-entry .name {
+  font-weight: bold;
+  display: block;
+  margin-bottom: 0.3vw;
+}
+
+.log-entry .action-line {
+  color: #ccc;
+  margin-left: 0.5vw;
+}
+
+
+
+
+/* === Aspect Ratio Wrapper (20:9) === */
+.game-wrapper {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+
+
+/* === Base Button Styling === */
+button {
+  padding: 0.6vw 1.2vw; /* em = relative to font-size */
+  font-size: 1vw;
+  cursor: pointer;
+  background: #333;
+  color: white;
+  border: 0.1vw solid #666; /* scalable border */
+  border-radius: 0.4vw;
+  transition: background 0.2s;
+}
+
+button:hover {
+  filter: brightness(1.1);
+  background: #555;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+
+.log-card-row {
+  display: flex;
+  gap: 0.3vw;
+  margin-top: 0.3em;
+  margin-bottom: 0.6em;
+}
+
+.log-card-row playing-card,
+.log-card-row .joker-card {
+  width: 2.5vw;
+  height: calc(2.5vw * 1.39);
+  flex-shrink: 0;
+}
+
+
+.log-card-scale-container {
+  transform: scale(0.5);
+  transform-origin: left center;
+  width: fit-content;
+  white-space: nowrap;
+  height: calc(2.5vw * 1.39);
+  padding: 1em;
+  padding-left: 0;
+  line-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+
+.mini-popup {
+  z-index: 10000;
+  text-align: center;
+  padding: 2vw;
+  background: white;
+  border-radius: 1vw;
+  box-shadow: 0 0 1vw rgba(0,0,0,0.4);
+  max-width: 50vw;
+  transform: scale(1.1);
+}
+
+#game-over-ok {
+  margin-top: 1vw;
+  padding: 0.5vw 1.5vw;
+  font-size: 1vw;
+}
+
+.log-panel {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+}
+
+.log-panel::-webkit-scrollbar {
+  width: 0.6vw;
+}
+
+.log-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.log-panel::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.3);
+  border-radius: 0.3vw;
+  border: 0.1vw solid rgba(0, 0, 0, 0.1);
+}
+
+.log-panel::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.5);
+}

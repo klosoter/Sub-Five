@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Card Game Lobby</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='lobby.css') }}">
+</head>
+
+<body class="lobby">
+  <h1>Card Game</h1>
+
+  <a href="/create">
+    <button class="primary-btn">Create New Game</button>
+  </a>
+
+  <h2>Available Rooms</h2>
+  <table class="room-table">
+    <thead>
+      <tr>
+        <th>Room Code</th>
+        <th>Players</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody id="room-list-body">
+      {% for room in room_list %}
+      <tr>
+        <td>{{ room.code }}</td>
+        <td>{{ room.players | join(', ') }}</td>
+        <td>
+          <div class="room-controls">
+            {% if not room.started %}
+            <a href="/join/{{ room.code }}">
+              <button class="join-btn">Join</button>
+            </a>
+            {% else %}
+            In Progress
+            {% endif %}
+            <form method="POST" action="/delete-room/{{ room.code }}" style="display:inline;">
+              <button onclick="return confirm('Delete room {{ room.code }}?')" class="delete-btn">Delete</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <script>
+    async function refreshRooms() {
+      const res = await fetch("/room-list");
+      if (!res.ok) return;
+      const rooms = await res.json();
+      const tbody = document.getElementById("room-list-body");
+      tbody.innerHTML = "";
+
+      for (const room of rooms) {
+        const tr = document.createElement("tr");
+
+        const codeTd = document.createElement("td");
+        codeTd.textContent = room.code;
+
+        const playersTd = document.createElement("td");
+        playersTd.textContent = room.players.join(", ");
+
+        const actionTd = document.createElement("td");
+        const controlDiv = document.createElement("div");
+        controlDiv.classList.add("room-controls");
+
+        if (!room.started) {
+          const joinBtn = document.createElement("button");
+          joinBtn.textContent = "Join";
+          joinBtn.classList.add("join-btn");
+          joinBtn.onclick = () => window.location.href = `/join/${room.code}`;
+          controlDiv.appendChild(joinBtn);
+        } else {
+          controlDiv.textContent = "In Progress";
+        }
+
+        const deleteForm = document.createElement("form");
+        deleteForm.method = "POST";
+        deleteForm.action = `/delete-room/${room.code}`;
+        deleteForm.style.display = "inline";
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.textContent = "Delete";
+        deleteBtn.classList.add("delete-btn");
+        deleteBtn.onclick = () => confirm(`Delete room ${room.code}?`);
+        deleteForm.appendChild(deleteBtn);
+
+        controlDiv.appendChild(deleteForm);
+        actionTd.appendChild(controlDiv);
+
+        tr.appendChild(codeTd);
+        tr.appendChild(playersTd);
+        tr.appendChild(actionTd);
+
+        tbody.appendChild(tr);
+      }
+    }
+
+    setInterval(refreshRooms, 3000);
+    refreshRooms();
+  </script>
+</body>
+
+</html>

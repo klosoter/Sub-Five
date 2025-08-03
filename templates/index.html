@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Card Game</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Symbols&display=swap" rel="stylesheet">
+</head>
+
+<body>
+  <div class="game-wrapper">
+    <div class="game-container">      <!-- Table -->
+      <div id="center-table">
+        <div class="deck-area">
+          <div class="card back" id="deck"></div>
+        </div>
+        <div class="pile-area">
+          <div class="card" id="pile">🂠</div>
+        </div>
+        <div id="player-area"></div>
+        <!-- Opponents injected dynamically -->
+      </div>
+
+      <!-- Log panel -->
+      <div id="log-panel" class="log-panel"></div>
+
+      <!-- Controls -->
+      <button id="play-selected">Play Selected</button>
+      <button id="end-round">End Round</button>
+      <button id="end-game">End Game</button>
+
+    </div>
+  </div>
+
+  <script>
+    sessionStorage.setItem("roomCode", "{{ room_code }}");
+  </script>
+  <script src="{{ url_for('static', filename='script.js') }}"></script>
+  <script src="{{ url_for('static', filename='elements.cardmeister.full.js') }}"></script>
+  <!-- <script>
+    function adjustMainAreaSize() {
+      const area = document.querySelector(".main-area");
+      if (!area) return;
+  
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+  
+      // Ideal height when using full width
+      const idealHeight = vw * 9 / 20;
+  
+      if (idealHeight <= vh) {
+        // Full width fits → use max width
+        area.style.width = "100vw";
+        area.style.height = `${idealHeight}px`;
+      } else {
+        // Full width would overflow → constrain by height
+        const idealWidth = vh * 20 / 9;
+        area.style.height = "100vh";
+        area.style.width = `${idealWidth}px`;
+      }
+    }
+  
+    window.addEventListener("load", adjustMainAreaSize);
+    window.addEventListener("resize", adjustMainAreaSize);
+  </script> -->
+  
+</body>
+</html>
