@@ -305,143 +305,7 @@ function renderLog(logData) {
 }
 
 // === 6. POPUP BUILDERS ===
-// function renderRoundSummaryPopup(data) {
-//   if (!data.roundSummaryPopup || document.getElementById("round-popup")) return;
-
-//   const popup = document.createElement("div");
-//   popup.id = "round-popup";
-//   popup.classList.add("round-popup");
-
-//   const content = document.createElement("div");
-//   content.classList.add("popup-content");
-//   content.innerHTML = data.roundSummaryPopup;
-
-//   const readyBtn = document.createElement("button");
-//   readyBtn.classList.add("popup-close");
-
-//   const isGameOver = data.gameOver;
-//   const initialIsReady = Array.isArray(data.readyPlayers) && data.readyPlayers.includes(gameState.playerName);
-
-//   readyBtn.textContent = isGameOver
-//     ? (initialIsReady ? "Cancel New Game" : "Ready for New Game")
-//     : (initialIsReady ? "Cancel Ready" : "I'm Ready");
-
-//   readyBtn.onclick = async () => {
-//     const res = await fetch("/ready-next-round", { method: "POST" });
-//     const result = await res.json();
-
-//     if (!result.ready || !Array.isArray(result.ready)) return;
-
-//     const newReady = result.ready.includes(gameState.playerName);
-
-//     readyBtn.textContent = data.gameOver
-//       ? (newReady ? "Cancel New Game" : "Ready for New Game")
-//       : (newReady ? "Cancel Ready" : "I'm Ready");
-
-//     if (result.all_ready) {
-//       document.getElementById("round-popup")?.remove();
-//       clearSessionLog();
-//       DOM.logEntry.innerHTML = "";
-//       await loadState();
-//     }
-//   };
-
-
-//   content.appendChild(readyBtn);
-//   popup.appendChild(content);
-//   document.body.appendChild(popup);
-
-//   const numRows = content.querySelectorAll(".round-summary-table tr").length - 1;
-//   const baseHeight = 439.69;
-//   const heightDelta = 112.07;
-//   let scale = 2 * baseHeight / (baseHeight + (numRows - 2) * heightDelta);
-//   scale = Math.min(scale, 2);
-//   content.style.transform = `scale(${scale})`;
-//   content.style.transformOrigin = "center";
-// }
-
-
-// function renderRoundSummaryPopup(data) {
-//   if (!data.roundSummaryPopup || document.getElementById("round-popup")) return;
-
-//   const popup = document.createElement("div");
-//   popup.id = "round-popup";
-//   popup.classList.add("round-popup");
-
-//   const content = document.createElement("div");
-//   content.classList.add("popup-content");
-//   content.innerHTML = data.roundSummaryPopup;
-
-//   const isGameOver = data.gameOver;
-//   const initialIsReady = Array.isArray(data.readyPlayers) && data.readyPlayers.includes(gameState.playerName);
-
-//   // === Ready Button ===
-//   const readyBtn = document.createElement("button");
-//   readyBtn.classList.add("popup-close");
-//   readyBtn.textContent = isGameOver
-//     ? (initialIsReady ? "Cancel New Game" : "Ready for New Game")
-//     : (initialIsReady ? "Cancel Ready" : "I'm Ready");
-
-//   readyBtn.onclick = async () => {
-//     const res = await fetch("/ready-next-round", { method: "POST" });
-//     const result = await res.json();
-
-//     if (!result.ready || !Array.isArray(result.ready)) return;
-
-//     const newReady = result.ready.includes(gameState.playerName);
-//     readyBtn.textContent = isGameOver
-//       ? (newReady ? "Cancel New Game" : "Ready for New Game")
-//       : (newReady ? "Cancel Ready" : "I'm Ready");
-
-//     if (result.all_ready) {
-//       document.getElementById("round-popup")?.remove();
-//       clearSessionLog();
-//       DOM.logEntry.innerHTML = "";
-//       await loadState();
-//     }
-//   };
-
-//   content.appendChild(readyBtn);
-
-//   // === Quit Button (only if game is over) ===
-
-//   if (isGameOver) {
-//     const buttonContainer = document.createElement("div");
-//     buttonContainer.style.display = "flex";
-//     buttonContainer.style.justifyContent = "center";
-//     buttonContainer.style.gap = "1em";
-//     buttonContainer.style.marginTop = "1.5em";
-
-//     buttonContainer.appendChild(readyBtn);
-
-//     if (isGameOver) {
-//       const quitBtn = document.createElement("button");
-//       quitBtn.classList.add("popup-close");
-//       quitBtn.textContent = "Quit";
-//       quitBtn.onclick = () => quitGameAndRedirect();
-//       buttonContainer.appendChild(quitBtn);
-//     }
-
-//     content.appendChild(buttonContainer);
-
-//   }
-
-//   popup.appendChild(content);
-//   document.body.appendChild(popup);
-
-//   // === Dynamic scaling for number of players ===
-//   const numRows = content.querySelectorAll(".round-summary-table tr").length - 1;
-//   const baseHeight = 439.69;
-//   const heightDelta = 112.07;
-//   let scale = 2 * baseHeight / (baseHeight + (numRows - 2) * heightDelta);
-//   scale = Math.min(scale, 2);
-//   content.style.transform = `scale(${scale})`;
-//   content.style.transformOrigin = "center";
-// }
-
 function renderRoundSummaryPopup(data) {
-  console.log("🔍 renderRoundSummaryPopup called with:", data);
-
   if (!data.roundSummaryPopup || document.getElementById("round-popup")) {
     console.warn("⚠️ No roundSummaryPopup or popup already shown");
     return;
@@ -455,13 +319,8 @@ function renderRoundSummaryPopup(data) {
   content.classList.add("popup-content");
   content.innerHTML = data.roundSummaryPopup;
 
-  console.log("✅ Popup content set:", data.roundSummaryPopup);
-
   const isGameOver = data.gameOver;
   const initialIsReady = Array.isArray(data.readyPlayers) && data.readyPlayers.includes(gameState.playerName);
-
-  console.log("🎯 isGameOver:", isGameOver);
-  console.log("👤 isReady initially:", initialIsReady);
 
   // === Ready Button ===
   const readyBtn = document.createElement("button");
@@ -471,10 +330,8 @@ function renderRoundSummaryPopup(data) {
     : (initialIsReady ? "Cancel Ready" : "I'm Ready");
 
   readyBtn.onclick = async () => {
-    console.log("✅ Ready button clicked");
     const res = await fetch("/ready-next-round", { method: "POST" });
     const result = await res.json();
-    console.log("🔁 Ready result:", result);
 
     if (!result.ready || !Array.isArray(result.ready)) return;
 
@@ -484,7 +341,6 @@ function renderRoundSummaryPopup(data) {
       : (newReady ? "Cancel Ready" : "I'm Ready");
 
     if (result.all_ready) {
-      console.log("✅ All players ready, closing popup and reloading");
       document.getElementById("round-popup")?.remove();
       clearSessionLog();
       DOM.logEntry.innerHTML = "";
@@ -496,8 +352,6 @@ function renderRoundSummaryPopup(data) {
 
   // === Quit Button (only if game is over) ===
   if (isGameOver) {
-    console.log("🟥 Game is over — adding Quit button");
-
     const buttonContainer = document.createElement("div");
     buttonContainer.style.display = "flex";
     buttonContainer.style.justifyContent = "center";
@@ -510,7 +364,6 @@ function renderRoundSummaryPopup(data) {
     quitBtn.classList.add("popup-close");
     quitBtn.textContent = "Quit";
     quitBtn.onclick = () => {
-      console.log("🚪 Quit button clicked");
       quitGameAndRedirect();
     };
     buttonContainer.appendChild(quitBtn);
@@ -520,7 +373,6 @@ function renderRoundSummaryPopup(data) {
 
   popup.appendChild(content);
   document.body.appendChild(popup);
-  console.log("✅ Popup attached to DOM");
 }
 
 
@@ -574,15 +426,7 @@ async function loadState() {
   }
 
   state.readyPlayers = new Set(data.readyPlayers || []);
-  state.pileTop = data.pileTop;
-
-  console.log("Polling state", {
-    roundEnded: state.roundEnded,
-    roundJustRestarted,
-    popupAlreadyPresent: !!document.getElementById("round-popup"),
-    hasPopupData: !!data.roundSummaryPopup
-  });
-  
+  state.pileTop = data.pileTop;  
 
   if (state.roundEnded && !roundJustRestarted && data.roundSummaryPopup && !document.getElementById("round-popup")) {
     renderRoundSummaryPopup(data);
