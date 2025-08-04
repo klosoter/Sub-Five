@@ -1,39 +1,42 @@
+from flask import Flask, request, jsonify, render_template, session, redirect, url_for, g
 import uuid
-import logging
+import redis
+import json
 import os
-from flask import Flask, request, jsonify, render_template, session, redirect, url_for
-from flask_cors import CORS
-from werkzeug.serving import WSGIRequestHandler
-from game import Game, Card, sort_hand
-from dotenv import load_dotenv
+from datetime import timedelta
 
+from game import Game, Card, sort_hand, build_game_over_notice
+
+from dotenv import load_dotenv
 load_dotenv()
 
-# class QuietHandler(WSGIRequestHandler):
-#     def log_request(self, code='-', size='-'):
-#         if isinstance(code, int) and code in (200, 304):
-#             return  # suppress
-#         super().log_request(code, size)
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "dev-key")
+app.config["SESSION_COOKIE_SECURE"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=2)
 
-logging.getLogger('werkzeug').setLevel(logging.WARNING)
+redis_client = redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
 
-# === Flask Setup ===
-app = Flask(__name__, static_url_path='/static', static_folder='static', template_folder='templates')
-app.secret_key = os.getenv("SECRET_KEY", "fallback-key-for-dev")
+# Constants
+ROOM_PREFIX = "room:"
+ROOM_TTL_SECONDS = 3600
 
-CORS(app)
-rooms = {}  # { room_code: {"players": [], "ready": {}, "game": Game instance} }
+# ---------------- Utility functions ----------------
 
 
 def build_game_over_notice(winners):
     if not winners:
         return ""
-
+    
     if len(winners) == 1:
         name, score = winners[0]
         winner_text = f"<strong>{name}</strong> wins with {score} points!"
+    
     else:
-        lines = [f"<strong>{name}</strong> ({score} pts)" for name, score in winners]
+        lines = [
+            f"<strong>{name}</strong> ({score} pts)" for name, score in winners]
         winner_text = "Tie! " + ", ".join(lines)
 
     return f"""
@@ -45,6 +48,7 @@ def build_game_over_notice(winners):
     """
 
 
+
 def build_round_summary_popup(round_ender, hands, hand_values, scores, penalty_applied, lowest_players):
     def card_html(card_str):
         if card_str.startswith("JOKER"):
@@ -54,13 +58,14 @@ def build_round_summary_popup(round_ender, hands, hand_values, scores, penalty_a
         suit = card_str[-1]
         rank_map = {"A": "Ace", "K": "King", "Q": "Queen", "J": "Jack", "10": "10", "9": "9", "8": "8",
                     "7": "7", "6": "6", "5": "5", "4": "4", "3": "3", "2": "2"}
-        suit_map = {"♠": "Spades", "♥": "Hearts", "♦": "Diamonds", "♣": "Clubs"}
+        suit_map = {"♠": "Spades", "♥": "Hearts",
+                    "♦": "Diamonds", "♣": "Clubs"}
         r = rank_map.get(rank, rank)
         s = suit_map.get(suit, suit)
         return f'<playing-card rank="{r}" suit="{s}"></playing-card>'
 
     rows = []
-    
+
     for name, hand in hands.items():
         round_pts = hand_values[name]
         total_score = scores[name]
@@ -100,129 +105,224 @@ def build_round_summary_popup(round_ender, hands, hand_values, scores, penalty_a
     """
 
 
-# === Cache-Control for Static Files ===
+def extract_player_names(players):
+    return [p if isinstance(p, str) else p.get("name", "") for p in players]
+
+
+def store_game_in_room(room, game):
+    room["game"] = game.serialize()
+    room["players"] = [p.name for p in game.players]
+
+
 @app.after_request
 def add_no_cache_headers(response):
+    """Prevent caching of static assets like CSS/JS during development."""
     if response.content_type in ("text/css", "application/javascript"):
         response.headers["Cache-Control"] = "no-store"
     return response
 
 
 @app.before_request
-def reset_invalid_debug_session():
-    if app.debug:
-        code = session.get("room")
-        name = session.get("player_name")
-        if code == "debug" and (not code in rooms or name not in rooms[code]["players"]):
-            session.clear()
+def setup_session_and_context():
+    """Set session permanence and load player/room info into `g`."""
+    session.permanent = True  # Enables session lifetime control (optional)
+
+    # Extract from session
+    g.room_code = session.get("room")
+    g.player_name = session.get("player_name")
+
+    # Load room from Redis (or None if not set)
+    g.room = load_room(g.room_code) if g.room_code else None
 
 
-# === Room and Session Lifecycle ===
+def room_key(code):
+    return f"{ROOM_PREFIX}{code}"
+
+
+def save_room(code, data, ttl=ROOM_TTL_SECONDS):
+    """Store a room in Redis with TTL (default 1 hour)."""
+    redis_client.setex(room_key(code), ttl, json.dumps(data))
+
+
+def load_room(code):
+    """Load a room by code, or return None if not found."""
+    val = redis_client.get(room_key(code))
+    try:
+        return json.loads(val) if val else None
+    except json.JSONDecodeError:
+        return None
+
+
+def delete_room(code):
+    """Remove a room from Redis."""
+    redis_client.delete(room_key(code))
+
+
+def list_rooms():
+    """Return a list of (code, data) tuples for all rooms."""
+    keys = redis_client.keys(f"{ROOM_PREFIX}*")
+    rooms = []
+    for key in keys:
+        code = key[len(ROOM_PREFIX):]
+        data = load_room(code)
+        if data:
+            rooms.append((code, data))
+    return rooms
+
+# ---------------- Routes ----------------
+
+
 @app.route("/")
 def home():
-    room_list = [
-        {"code": code, "players": data["players"],
-         "started": data["game"] is not None}
-        for code, data in rooms.items()
-    ]
-    return render_template("home.html", room_list=room_list)
-
-
-@app.route("/debug")
-def debug_game():
-    name = "Alice" if hash(request.remote_addr + request.user_agent.string) % 2 == 0 else "Bob"
-    session["room"] = "debug"
-    session["player_name"] = name
-
-    if "debug" not in rooms:
-        from game import Game
-        rooms["debug"] = {
-            "players": ["Alice", "Bob"],
-            "game": Game(["Alice", "Bob"]),
-            "ready": set()
+    return render_template("home.html", room_list=[
+        {
+            "code": code,
+            "players": extract_player_names(room.get("players", [])),
+            "started": room.get("started", False)
         }
+        for code, room in list_rooms()
+    ])
 
-    return redirect("/game")
 
+@app.route("/room-list")
+def room_list_json():
+    return jsonify([
+        {
+            "code": code,
+            "players": extract_player_names(room.get("players", [])),
+            "started": room.get("started", False)
+        }
+        for code, room in list_rooms()
+    ])
 
 
 @app.route("/create")
 def create_room():
+    """Create a new room and redirect to join page."""
     session.clear()
-    room_code = str(uuid.uuid4())[:6]
-    rooms[room_code] = {"players": [], "ready": {}, "game": None}
-    return redirect(url_for("join_room", code=room_code))
+    code = str(uuid.uuid4())[:6].upper()
+    room_data = {
+        "players": [],
+        "ready": {},
+        "game": None,
+        "started": False
+    }
+    save_room(code, room_data)
+    return redirect(url_for("join_room", code=code))
 
 
 @app.route("/join/<code>")
 def join_room(code):
-    if code not in rooms:
-        return redirect(url_for("game"))
+    room = load_room(code)
+    if not room:
+        return redirect("/")
 
-    # Only clear identity if it doesn't match the room
-    if session.get("room") != code:
-        session.clear()
-        session["room"] = code
+    name = session.get("player_name")
+
+    # If session has a player name, but they're not in the room → clear it
+    if name and name not in room.get("players", []):
+        session.pop("player_name", None)
 
     return render_template("join.html", room_code=code, player_name=session.get("player_name"))
 
 
 @app.route("/join-room", methods=["POST"])
 def post_join_room():
+    """Handle name submission and join room."""
     code = request.form.get("room")
-    name = request.form.get("name")
+    name = request.form.get("name", "").strip()
 
-    if code not in rooms or not name:
+    room = load_room(code)
+    if not room or not name:
         return redirect("/")
 
     session["room"] = code
     session["player_name"] = name
 
-    if name not in rooms[code]["players"]:
-        rooms[code]["players"].append(name)
-        rooms[code]["ready"][name] = False
+    if name not in room["players"]:
+        room["players"].append(name)
+        room["ready"][name] = False
+        save_room(code, room)
 
     return redirect(url_for("join_room", code=code))
 
 
+@app.route("/toggle-ready/<code>", methods=["POST"])
+def toggle_ready(code):
+    """Toggle player ready state; if all ready, start game."""
+    room = load_room(code)
+    name = session.get("player_name")
+
+    if not room or not name or name not in room["players"]:
+        return jsonify({"error": "Invalid session"})
+
+    # Toggle readiness
+    room["ready"][name] = not room["ready"].get(name, False)
+
+    # Start game if everyone is ready
+    all_ready = all(room["ready"].values()) and len(room["players"]) >= 2
+    if all_ready and not room.get("started"):
+        player_names = [p["name"] if isinstance(
+            p, dict) else p for p in room["players"]]
+        game = Game(player_names)
+
+        store_game_in_room(room, game)
+
+        room["started"] = True
+        save_room(code, room)
+        return jsonify({"status": "started"})
+
+    # Save updated readiness
+    save_room(code, room)
+    return jsonify({"ready": room["ready"][name]})
+
+
 @app.route("/room-state/<code>")
 def room_state(code):
-    room = rooms.get(code)
+    """Return room state for polling (players + readiness)."""
+    room = load_room(code)
     if not room:
-        return jsonify({"error": "Room not found"}), 404
+        return jsonify({"error": "Room closed"})
+
+    if session.get("player_name") not in room["players"]:
+        session.pop("player_name", None)
+
     return jsonify({
-        "players": room["players"],
+        "players": room.get("players", []),
         "ready": room.get("ready", {}),
-        "started": room["game"] is not None
+        "started": room.get("started", False)
     })
 
 
-@app.route("/room-list")
-def room_list_json():
-    room_list = []
-    for code, room in rooms.items():
-        try:
-            room_list.append({
-                "code": code,
-                "players": room.get("players", []),
-                "started": room.get("started", False)
-            })
-        except Exception as e:
-            print(f"Error in room {code}: {e}")
-            continue  # skip malformed room
-
-    return jsonify(room_list)
-
-
 @app.route("/delete-room/<code>", methods=["POST"])
-def delete_room(code):
-    if code in rooms:
-        del rooms[code]
+def delete_room_route(code):
+    """Delete room and redirect to lobby."""
+    delete_room(code)
     return redirect("/")
 
 
 @app.route("/leave", methods=["POST"])
 def leave():
+    code = session.get("room")
+    name = session.get("player_name")
+
+    if not code or not name:
+        session.clear()
+        return jsonify({"redirect": "/"})
+
+    room = load_room(code)
+    if room and name in room.get("players", []):
+        room["players"].remove(name)
+        room["ready"].pop(name, None)
+
+        # Optional: Clear game state if active
+        if not room["players"]:
+            delete_room(code)
+        else:
+            room["game"] = None if room.get("started") else room.get("game")
+            room["started"] = False
+            save_room(code, room)
+
     session.clear()
     return jsonify({"redirect": "/"})
 
@@ -235,32 +335,19 @@ def end_room():
     if not code or not player_name:
         return jsonify({"error": "Not in a room"}), 400
 
-    room = rooms.get(code)
+    room = load_room(code)
     if not room:
         return jsonify({"error": "Room not found"}), 400
 
-    room["terminated"] = True  
-    del rooms[code]  
-    session.clear() 
+    # Optional: Mark room as terminated for any future polling logic
+    room["terminated"] = True
+    save_room(code, room)
+
+    # Actually remove the room from Redis
+    delete_room(code)
+    session.clear()
 
     return jsonify({"status": "Room closed", "redirect": "/"})
-
-
-#  === Game Lifecycle ===
-@app.route("/toggle-ready/<code>", methods=["POST"])
-def toggle_ready(code):
-    player = session.get("player_name")
-    room = rooms.get(code)
-    if not room or player not in room["players"]:
-        return jsonify({"error": "Invalid room or player"}), 400
-
-    room["ready"][player] = not room["ready"].get(player, False)
-
-    if len(room["players"]) >= 2 and all(room["ready"].values()):
-        room["game"] = Game(room["players"])
-        return jsonify({"status": "started"})
-
-    return jsonify({"status": "toggled", "ready": room["ready"][player]})
 
 
 @app.route("/game")
@@ -274,47 +361,53 @@ def game():
 def state():
     code = session.get("room")
     player_name = session.get("player_name")
-    room = rooms.get(code)
-    
-    if not room:
-        session.clear()
-        return jsonify({"error": "Room closed"}), 400
-    
-    if not code or not player_name or not room:
-        return jsonify({"error": "Invalid session"}), 400
+    room = load_room(code)
 
-    if player_name not in room["players"]:
+    if not room or not code or not player_name or player_name not in room["players"]:
+        session.clear()
         return jsonify({"error": "Invalid session"}), 400
 
     game = room.get("game")
     if not game:
         return jsonify({"error": "Game not started"}), 400
+
+    if isinstance(game, dict):
+        game = Game.deserialize(game)
+        room["game"] = game
+
+    # Show game-over popup once, then clear
+    # Only send popup if player hasn't seen it yet
+
+    gameOver = game.game_over
     
-    if getattr(game, "game_over", False):
-        winners = getattr(game, "winners", [])
-        gameOverNotice = build_game_over_notice(winners)
-        gameOver = True
+    if game.game_over_notice and player_name not in game.seen_game_over_notice:
+        gameOverNotice = game.game_over_notice
+        game.seen_game_over_notice.add(player_name)
     else:
         gameOverNotice = None
-        gameOver = False
+    
+    if set(p.name for p in game.players) == game.seen_game_over_notice:
+        game.game_over_notice = None
+        game.seen_game_over_notice = set()
+ 
+    # If all players have seen it, clear it
+    if set(p.name for p in game.players) == game.seen_game_over_notice:
+        game.game_over_notice = None
+        game.seen_game_over_notice = set()
 
-        
-    all_ready = set(p.name for p in game.players) == game.ready_players
-    if all_ready:
+
+    # Start next round if all players ready
+    if set(p.name for p in game.players) == game.ready_players:
         game.start_next_round()
-        # game.round_ended = False
-        all_ready = set()
-        all_ready = False
-        game.ready_players = []
-
+        game.ready_players = set()
+        game.round_ended = False
 
     action = getattr(game, "last_action", None)
     if action:
         draw_source = action["draw_source"]
         drew_card = (
-            str(action["drawn_card"])
-            if draw_source == "pile" or action["player"] == player_name
-            else None
+            str(action["drawn_card"]
+                ) if draw_source == "pile" or action["player"] == player_name else None
         )
         last_action = {
             "player": action["player"],
@@ -322,11 +415,14 @@ def state():
             "drawn_card": drew_card,
             "draw_source": draw_source
         }
-        
-    
     else:
         last_action = None
+
+    room["game"] = game.serialize()
+    save_room(code, room)
     
+    gameOver = game.game_over
+
     return jsonify({
         "players": [
             {
@@ -354,22 +450,24 @@ def state():
 def handle_play_cards():
     code = session.get("room")
     player_name = session.get("player_name")
-    room = rooms.get(code)
-    if not room or not room["game"]:
+    room = load_room(code)
+
+    if not room or not room.get("game"):
         return redirect("/")
-        # return jsonify({"error": "Game not started"}), 400
 
     game = room["game"]
+    if isinstance(game, dict):
+        game = Game.deserialize(game)
+    room["game"] = game  # safe temporarily
+
     data = request.json
     cards_raw = data.get("cards", [])
     draw = data.get("draw")
 
-    cards = []
-    for s in cards_raw:
-        if s.startswith("JOKER") and len(s) == 7:
-            cards.append(Card("JOKER", s[-1]))
-        else:
-            cards.append(Card(s[:-1], s[-1]))
+    cards = [
+        Card("JOKER", s[-1]) if s.startswith("JOKER") else Card(s[:-1], s[-1])
+        for s in cards_raw
+    ]
 
     try:
         player = next(p for p in game.players if p.name == player_name)
@@ -378,10 +476,13 @@ def handle_play_cards():
         game.last_action = {
             "player": player.name,
             "played": [str(c) for c in played],
-            "drawn_card": drawn,
+            "drawn_card": str(drawn),
             "draw_source": draw
         }
+        store_game_in_room(room, game)
+        save_room(code, room)
         return jsonify({"status": "OK"})
+
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
@@ -390,42 +491,46 @@ def handle_play_cards():
 def end_round():
     code = session.get("room")
     player = session.get("player_name")
-    room = rooms.get(code)
-    
-    if not room or not room["game"]:
-        print("error")
+    room = load_room(code)
+
+    if not room or not room.get("game"):
         return redirect("/")
-        # return jsonify({"error": "Game not started"}), 400
 
     try:
         game = room["game"]
+        if isinstance(game, dict):
+            game = Game.deserialize(game)
+        room["game"] = game  # keep deserialized for now
+
         hands, hand_values, scores, penalty_applied, lowest_players = game.end_game(
             player)
         game.round_ended = True
         game.ready_players = set()
-        
-        winners = game.determine_winners()
-        
-        if winners:
+
+        if game.is_game_over():
             game.game_over = True
-            game.winners = winners
-            gameOverNotice = build_game_over_notice(winners)
+            game.winners = game.determine_winners()
+            game.game_over_notice = build_game_over_notice(game.winners)
         else:
-            gameOverNotice = None
-        
-        
-        
+            game.game_over_notice = None
+
         game.round_summary_html = build_round_summary_popup(
             round_ender=player,
-            hands = {p.name: [str(c) for c in sort_hand(p.hand)] for p in game.players},
+            hands={p.name: [str(c) for c in sort_hand(p.hand)]
+                   for p in game.players},
             hand_values=hand_values,
             scores=scores,
             penalty_applied=penalty_applied,
-            lowest_players=lowest_players
+            lowest_players=lowest_players,
+            # game_over=game.game_over
         )
-        
-        # game.start_next_round()
-        
+
+        room["players"] = [p.name for p in game.players]
+        room["game"] = game.serialize()
+        save_room(code, room)
+
+        print(game.winners)
+        print(game.game_over_notice)
         return jsonify({
             "hands": hands,
             "hand_values": hand_values,
@@ -434,8 +539,8 @@ def end_round():
             "lowest_player": lowest_players,
             "round_ender": player,
             "roundSummaryPopup": game.round_summary_html,
-            "gameOverNotice": gameOverNotice,
-            "gameOver": bool(winners),
+            "gameOverNotice": game.game_over_notice,
+            "gameOver": game.game_over,
             "readyPlayers": list(room["ready"]),
         })
 
@@ -445,50 +550,48 @@ def end_round():
 
 @app.route("/ready-next-round", methods=["POST"])
 def ready_next_round():
-    try:
-        code = session.get("room")
-        player = session.get("player_name")
-        if not code or not player:
-            return jsonify({"error": "Missing session"}), 400
+    code = session.get("room")
+    player = session.get("player_name")
 
-        room = rooms.get(code)
-        if not room or "game" not in room:
-            return jsonify({"error": "Room/game not found"}), 400
+    if not code or not player:
+        return jsonify({"error": "Missing session"}), 400
 
-        game = room["game"]
-        if not game.round_ended:
-            return jsonify({"error": "Round not ended"}), 400
+    room = load_room(code)
+    if not room or "game" not in room:
+        return jsonify({"error": "Room/game not found"}), 400
 
-        # Toggle ready status
-        if player in game.ready_players:
-            game.ready_players.remove(player)
-        else:
-            game.ready_players.add(player)
+    game = room["game"]
+    if isinstance(game, dict):
+        game = Game.deserialize(game)
+    room["game"] = game  # allow mutation
 
-        all_ready = set(p.name for p in game.players) == game.ready_players
-        
-        if all_ready and game.round_ended:
-            if game.game_over:
-                game.reset_scores()
-            game.reset_for_next_round()
-            game.round_ended = False
-            game.last_action = None
+    if not game.round_ended:
+        return jsonify({"error": "Round not ended"}), 400
+
+    if player in game.ready_players:
+        game.ready_players.remove(player)
+    else:
+        game.ready_players.add(player)
+
+    all_ready = set(p.name for p in game.players) == game.ready_players
+
+    if all_ready and game.round_ended:
+        if game.game_over:
+            game.reset_scores()
+        game.reset_for_next_round()
+        game.round_ended = False
+        game.last_action = None
+    store_game_in_room(room, game)
+    save_room(code, room)
+
+    return jsonify({
+        "ready": list(game.ready_players),
+        "all_ready": all_ready,
+        "pileTop": str(game.play_pile),
+        "scores": game.scores,
+        "gameOver": game.game_over,
+    })
 
 
-        return jsonify({
-            "ready": list(game.ready_players),
-            "all_ready": all_ready,
-            "pileTop": str(game.play_pile),
-            "scores": game.scores,
-            "gameOver": game.game_over,
-        })
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
-
-
-#  === Game Lifecycle
 if __name__ == "__main__":
-    # app.run(debug=False, request_handler=QuietHandler)
-    app.run(debug=False)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))

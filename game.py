@@ -56,6 +56,12 @@ class Card:
         self.rank = rank
         self.suit = suit
 
+    @classmethod
+    def from_str(cls, s):
+        if s.startswith("JOKER") and len(s) == 7:
+            return cls("JOKER", s[-1])
+        return cls(s[:-1], s[-1])
+
     def __str__(self):
         return f"{self.rank}{self.suit}" if self.rank != JOKER else f"{JOKER}{self.suit}"
 
@@ -79,6 +85,16 @@ class Deck:
         self.cards = [Card(rank, suit) for suit in SUITS for rank in RANKS]
         self.cards += [Card(JOKER, suit) for suit in JOKER_SUITS]
         self.shuffle()
+        
+    def serialize(self):
+        return [str(c) for c in self.cards]
+
+    @classmethod
+    def deserialize(cls, data):
+        d = cls()
+        d.cards = [Card.from_str(s) for s in data]
+        return d
+
 
     def shuffle(self):
         random.shuffle(self.cards)
@@ -103,6 +119,14 @@ class Player:
         self.name = name
         self.hand = []
         self.score = 0
+
+    def serialize(self):
+        return {
+            "name": self.name,
+            "hand": [str(c) for c in self.hand],
+            "score": self.score
+    }
+
 
     def draw_card(self, card):
         if card:
@@ -133,7 +157,53 @@ class Game:
         self.last_summary_lines = []
         self.game_over = False
         self.winners = []
+        self.round_summary_html = ""
+        self.game_over_notice = None
+        self.seen_game_over_notice = set()
 
+
+
+
+    def serialize(self):
+        return {
+            "players": [p.serialize() for p in self.players],
+            "deck": self.deck.serialize(),
+            "play_pile": [str(c) for c in self.play_pile],
+            "current_player_index": self.current_player_index,
+            "last_action": self.last_action,
+            "round_ended": self.round_ended,
+            "ready_players": list(self.ready_players),
+            "last_summary_lines": self.last_summary_lines,
+            "game_over": self.game_over,
+            "winners": self.winners,
+            "round_summary_html": self.round_summary_html,
+            "game_over_notice": self.game_over_notice,
+            "seen_game_over_notice": list(self.seen_game_over_notice)
+
+        }
+
+    @classmethod
+    def deserialize(cls, data):
+        game = cls([p["name"] for p in data["players"]])  # Initializes players and deck
+        for p, pdata in zip(game.players, data["players"]):
+            p.hand = [Card.from_str(s) for s in pdata["hand"]]
+            p.score = pdata.get("score", 0)
+
+        game.deck = Deck.deserialize(data["deck"])
+        game.play_pile = [Card.from_str(s) for s in data["play_pile"]]
+        game.current_player_index = data["current_player_index"]
+        game.last_action = data["last_action"]
+        game.round_ended = data["round_ended"]
+        game.ready_players = set(data["ready_players"])
+        game.last_summary_lines = data["last_summary_lines"]
+        game.game_over = data["game_over"]
+        game.winners = data["winners"]
+        game.round_summary_html = data.get("round_summary_html", "")
+        game.game_over_notice = data.get("game_over_notice")
+        game.seen_game_over_notice = set(data.get("seen_game_over_notice", []))
+        return game
+
+    
     @property
     def scores(self):
         return {p.name: p.score for p in self.players}

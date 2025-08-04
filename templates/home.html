@@ -4,9 +4,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Card Game Lobby</title>
+  <title>Sub-Five Lobby</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='lobby.css') }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icon-192.png') }}">
 </head>
 
 <body class="lobby">
@@ -67,6 +68,8 @@
         playersTd.textContent = room.players.join(", ");
 
         const actionTd = document.createElement("td");
+        actionTd.classList.add("no-padding");
+
         const controlDiv = document.createElement("div");
         controlDiv.classList.add("room-controls");
 
@@ -74,6 +77,7 @@
           const joinBtn = document.createElement("button");
           joinBtn.textContent = "Join";
           joinBtn.classList.add("join-btn");
+          joinBtn.classList.add("room-action-btn","room-action-join");
           joinBtn.onclick = () => window.location.href = `/join/${room.code}`;
           controlDiv.appendChild(joinBtn);
         } else {
@@ -88,6 +92,7 @@
         const deleteBtn = document.createElement("button");
         deleteBtn.textContent = "Delete";
         deleteBtn.classList.add("delete-btn");
+        deleteBtn.classList.add("room-action-btn", "room-action-delete");
         deleteBtn.onclick = () => confirm(`Delete room ${room.code}?`);
         deleteForm.appendChild(deleteBtn);
 

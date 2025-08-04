@@ -89,6 +89,39 @@ function clearSessionLog() {
   gameState.lastLoggedActionId = "";
 }
 
+function enterFullscreen() {
+  if (!document.fullscreenElement) {
+    const el = document.documentElement;
+    if (el.requestFullscreen) el.requestFullscreen();
+    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    else if (el.msRequestFullscreen) el.msRequestFullscreen();
+  } else {
+    if (document.exitFullscreen) document.exitFullscreen();
+    else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    else if (document.msExitFullscreen) document.msExitFullscreen();
+  }
+}
+
+document.addEventListener("fullscreenchange", () => {
+  const btn = document.getElementById("fullscreen-btn");
+  if (btn) {
+    const isFull = !!document.fullscreenElement;
+    btn.textContent = isFull ? "⛶" : "⛶";
+  }
+});
+
+async function quitGameAndRedirect() {
+  const code = sessionStorage.getItem("roomCode");
+  if (!code) return;
+
+  const res = await fetch(`/delete-room/${code}`, { method: "POST" });
+  if (res.redirected) {
+    clearSessionLog();
+    window.location.href = res.url;
+  }
+}
+
+
 // === 4. DISPLAY UPDATE FUNCTIONS ===
 function updatePileDisplay() {
   DOM.pileEl.innerHTML = "";
@@ -151,7 +184,7 @@ function enforceTurnLock(handValue = null, roundEnded = false) {
   const isYourTurn = gameState.playerName === gameState.currentPlayer;
   DOM.playBtn.disabled = !isYourTurn || roundEnded;
   DOM.endBtn.disabled = roundEnded ? false : (!isYourTurn || (handValue !== null && handValue > 5));
-  DOM.endBtn.textContent = "End Round";
+  DOM.endBtn.textContent = "Finish";
 
   DOM.deckEl.style.pointerEvents = isYourTurn && !roundEnded ? "auto" : "none";
   DOM.pileEl.style.pointerEvents = isYourTurn && !roundEnded ? "auto" : "none";
@@ -272,8 +305,147 @@ function renderLog(logData) {
 }
 
 // === 6. POPUP BUILDERS ===
+// function renderRoundSummaryPopup(data) {
+//   if (!data.roundSummaryPopup || document.getElementById("round-popup")) return;
+
+//   const popup = document.createElement("div");
+//   popup.id = "round-popup";
+//   popup.classList.add("round-popup");
+
+//   const content = document.createElement("div");
+//   content.classList.add("popup-content");
+//   content.innerHTML = data.roundSummaryPopup;
+
+//   const readyBtn = document.createElement("button");
+//   readyBtn.classList.add("popup-close");
+
+//   const isGameOver = data.gameOver;
+//   const initialIsReady = Array.isArray(data.readyPlayers) && data.readyPlayers.includes(gameState.playerName);
+
+//   readyBtn.textContent = isGameOver
+//     ? (initialIsReady ? "Cancel New Game" : "Ready for New Game")
+//     : (initialIsReady ? "Cancel Ready" : "I'm Ready");
+
+//   readyBtn.onclick = async () => {
+//     const res = await fetch("/ready-next-round", { method: "POST" });
+//     const result = await res.json();
+
+//     if (!result.ready || !Array.isArray(result.ready)) return;
+
+//     const newReady = result.ready.includes(gameState.playerName);
+
+//     readyBtn.textContent = data.gameOver
+//       ? (newReady ? "Cancel New Game" : "Ready for New Game")
+//       : (newReady ? "Cancel Ready" : "I'm Ready");
+
+//     if (result.all_ready) {
+//       document.getElementById("round-popup")?.remove();
+//       clearSessionLog();
+//       DOM.logEntry.innerHTML = "";
+//       await loadState();
+//     }
+//   };
+
+
+//   content.appendChild(readyBtn);
+//   popup.appendChild(content);
+//   document.body.appendChild(popup);
+
+//   const numRows = content.querySelectorAll(".round-summary-table tr").length - 1;
+//   const baseHeight = 439.69;
+//   const heightDelta = 112.07;
+//   let scale = 2 * baseHeight / (baseHeight + (numRows - 2) * heightDelta);
+//   scale = Math.min(scale, 2);
+//   content.style.transform = `scale(${scale})`;
+//   content.style.transformOrigin = "center";
+// }
+
+
+// function renderRoundSummaryPopup(data) {
+//   if (!data.roundSummaryPopup || document.getElementById("round-popup")) return;
+
+//   const popup = document.createElement("div");
+//   popup.id = "round-popup";
+//   popup.classList.add("round-popup");
+
+//   const content = document.createElement("div");
+//   content.classList.add("popup-content");
+//   content.innerHTML = data.roundSummaryPopup;
+
+//   const isGameOver = data.gameOver;
+//   const initialIsReady = Array.isArray(data.readyPlayers) && data.readyPlayers.includes(gameState.playerName);
+
+//   // === Ready Button ===
+//   const readyBtn = document.createElement("button");
+//   readyBtn.classList.add("popup-close");
+//   readyBtn.textContent = isGameOver
+//     ? (initialIsReady ? "Cancel New Game" : "Ready for New Game")
+//     : (initialIsReady ? "Cancel Ready" : "I'm Ready");
+
+//   readyBtn.onclick = async () => {
+//     const res = await fetch("/ready-next-round", { method: "POST" });
+//     const result = await res.json();
+
+//     if (!result.ready || !Array.isArray(result.ready)) return;
+
+//     const newReady = result.ready.includes(gameState.playerName);
+//     readyBtn.textContent = isGameOver
+//       ? (newReady ? "Cancel New Game" : "Ready for New Game")
+//       : (newReady ? "Cancel Ready" : "I'm Ready");
+
+//     if (result.all_ready) {
+//       document.getElementById("round-popup")?.remove();
+//       clearSessionLog();
+//       DOM.logEntry.innerHTML = "";
+//       await loadState();
+//     }
+//   };
+
+//   content.appendChild(readyBtn);
+
+//   // === Quit Button (only if game is over) ===
+
+//   if (isGameOver) {
+//     const buttonContainer = document.createElement("div");
+//     buttonContainer.style.display = "flex";
+//     buttonContainer.style.justifyContent = "center";
+//     buttonContainer.style.gap = "1em";
+//     buttonContainer.style.marginTop = "1.5em";
+
+//     buttonContainer.appendChild(readyBtn);
+
+//     if (isGameOver) {
+//       const quitBtn = document.createElement("button");
+//       quitBtn.classList.add("popup-close");
+//       quitBtn.textContent = "Quit";
+//       quitBtn.onclick = () => quitGameAndRedirect();
+//       buttonContainer.appendChild(quitBtn);
+//     }
+
+//     content.appendChild(buttonContainer);
+
+//   }
+
+//   popup.appendChild(content);
+//   document.body.appendChild(popup);
+
+//   // === Dynamic scaling for number of players ===
+//   const numRows = content.querySelectorAll(".round-summary-table tr").length - 1;
+//   const baseHeight = 439.69;
+//   const heightDelta = 112.07;
+//   let scale = 2 * baseHeight / (baseHeight + (numRows - 2) * heightDelta);
+//   scale = Math.min(scale, 2);
+//   content.style.transform = `scale(${scale})`;
+//   content.style.transformOrigin = "center";
+// }
+
 function renderRoundSummaryPopup(data) {
-  if (!data.roundSummaryPopup || document.getElementById("round-popup")) return;
+  console.log("🔍 renderRoundSummaryPopup called with:", data);
+
+  if (!data.roundSummaryPopup || document.getElementById("round-popup")) {
+    console.warn("⚠️ No roundSummaryPopup or popup already shown");
+    return;
+  }
 
   const popup = document.createElement("div");
   popup.id = "round-popup";
@@ -283,29 +455,36 @@ function renderRoundSummaryPopup(data) {
   content.classList.add("popup-content");
   content.innerHTML = data.roundSummaryPopup;
 
-  const readyBtn = document.createElement("button");
-  readyBtn.classList.add("popup-close");
+  console.log("✅ Popup content set:", data.roundSummaryPopup);
 
   const isGameOver = data.gameOver;
   const initialIsReady = Array.isArray(data.readyPlayers) && data.readyPlayers.includes(gameState.playerName);
 
+  console.log("🎯 isGameOver:", isGameOver);
+  console.log("👤 isReady initially:", initialIsReady);
+
+  // === Ready Button ===
+  const readyBtn = document.createElement("button");
+  readyBtn.classList.add("popup-close");
   readyBtn.textContent = isGameOver
     ? (initialIsReady ? "Cancel New Game" : "Ready for New Game")
     : (initialIsReady ? "Cancel Ready" : "I'm Ready");
 
   readyBtn.onclick = async () => {
+    console.log("✅ Ready button clicked");
     const res = await fetch("/ready-next-round", { method: "POST" });
     const result = await res.json();
+    console.log("🔁 Ready result:", result);
 
     if (!result.ready || !Array.isArray(result.ready)) return;
 
     const newReady = result.ready.includes(gameState.playerName);
-
-    readyBtn.textContent = data.gameOver
+    readyBtn.textContent = isGameOver
       ? (newReady ? "Cancel New Game" : "Ready for New Game")
       : (newReady ? "Cancel Ready" : "I'm Ready");
 
     if (result.all_ready) {
+      console.log("✅ All players ready, closing popup and reloading");
       document.getElementById("round-popup")?.remove();
       clearSessionLog();
       DOM.logEntry.innerHTML = "";
@@ -313,21 +492,43 @@ function renderRoundSummaryPopup(data) {
     }
   };
 
-
   content.appendChild(readyBtn);
+
+  // === Quit Button (only if game is over) ===
+  if (isGameOver) {
+    console.log("🟥 Game is over — adding Quit button");
+
+    const buttonContainer = document.createElement("div");
+    buttonContainer.style.display = "flex";
+    buttonContainer.style.justifyContent = "center";
+    buttonContainer.style.gap = "1em";
+    buttonContainer.style.marginTop = "1.5em";
+
+    buttonContainer.appendChild(readyBtn);
+
+    const quitBtn = document.createElement("button");
+    quitBtn.classList.add("popup-close");
+    quitBtn.textContent = "Quit";
+    quitBtn.onclick = () => {
+      console.log("🚪 Quit button clicked");
+      quitGameAndRedirect();
+    };
+    buttonContainer.appendChild(quitBtn);
+
+    content.appendChild(buttonContainer);
+  }
+
   popup.appendChild(content);
   document.body.appendChild(popup);
-
-  const numRows = content.querySelectorAll(".round-summary-table tr").length - 1;
-  const baseHeight = 439.69;
-  const heightDelta = 112.07;
-  let scale = 2 * baseHeight / (baseHeight + (numRows - 2) * heightDelta);
-  scale = Math.min(scale, 2);
-  content.style.transform = `scale(${scale})`;
-  content.style.transformOrigin = "center";
+  console.log("✅ Popup attached to DOM");
 }
 
+
 function renderGameOverNotice(data) {
+  if (data.gameOver && !data.gameOverNotice) {
+    console.warn("Game over but no gameOverNotice present.");
+  }
+
   if (!data.gameOverNotice || document.getElementById("mini-popup")) return;
 
   const miniPopup = document.createElement("div");
@@ -359,6 +560,7 @@ async function loadState() {
     window.location.href = "/";
     return;
   }
+  
 
   const state = gameState;
   const popup = document.getElementById("round-popup");
@@ -373,6 +575,14 @@ async function loadState() {
 
   state.readyPlayers = new Set(data.readyPlayers || []);
   state.pileTop = data.pileTop;
+
+  console.log("Polling state", {
+    roundEnded: state.roundEnded,
+    roundJustRestarted,
+    popupAlreadyPresent: !!document.getElementById("round-popup"),
+    hasPopupData: !!data.roundSummaryPopup
+  });
+  
 
   if (state.roundEnded && !roundJustRestarted && data.roundSummaryPopup && !document.getElementById("round-popup")) {
     renderRoundSummaryPopup(data);
@@ -465,20 +675,14 @@ function setupEventListeners() {
     gameState.selectedOrder = [];
     gameState.drawSource = null;
     clearSessionLog();
+
     await loadState();
   });
 
   DOM.endGameBtn?.addEventListener("click", async () => {
     const confirmEnd = confirm("Are you sure you want to end the game for everyone?");
     if (!confirmEnd) return;
-
-    const code = sessionStorage.getItem("roomCode");
-    const res = await fetch(`/delete-room/${code}`, { method: "POST" });
-
-    if (res.redirected) {
-      clearSessionLog();
-      window.location.href = res.url;
-    }
+    quitGameAndRedirect();
   });
 
   document.addEventListener("mousedown", (e) => {
@@ -518,7 +722,7 @@ function setupEventListeners() {
 
 // === 9. INITIALIZE ===
 function startAutoRefresh() {
-  gameState.autoRefreshTimer = setInterval(loadState, 50000);
+  gameState.autoRefreshTimer = setInterval(loadState, 500);
 }
 
 loadState();

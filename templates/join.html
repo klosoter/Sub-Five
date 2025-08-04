@@ -4,9 +4,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Join Room {{ room_code }}</title>
+  <title>Sub- Five Join Room {{ room_code }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='join.css') }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icon-192.png') }}">
 </head>
 
 <body class="join-page">
@@ -23,6 +24,7 @@
     <p class="player-name">You are: <strong>{{ player_name }}</strong></p>
     <button onclick="copyLink()">Share Room Link</button>
     <button id="readyBtn" onclick="toggleReady()">I'm Ready</button>
+    <button id="leave-room-btn" class="end-game">Leave Room</button>
     {% endif %}
 
     <div id="room-status"></div>
@@ -33,10 +35,15 @@
     const playerName = "{{ player_name | safe }}";
     let readyState = false;
 
+    document.getElementById("leave-room-btn").addEventListener("click", async () => {
+      await fetch("/leave", { method: "POST" });
+      window.location.href = "/";
+    });
+
     function copyLink() {
       const link = `${location.origin}/join/${roomCode}`;
       navigator.clipboard.writeText(link);
-      alert("Room link copied:\n" + link);
+      // alert("Room link copied:\n" + link);
     }
 
     async function toggleReady() {
@@ -85,96 +92,3 @@
 </body>
 
 </html>
-
-<!-- 
-<!DOCTYPE html>
-<html lang="en">
-
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Join Room {{ room_code }}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-  <style>
-    ul { list-style: none; padding: 0; }
-    li { margin: 5px 0; }
-    .ready { color: lightgreen; font-weight: bold; }
-  </style>
-</head>
-<body style="text-align:center; margin-top:3em;">
-  <h2>Room Code: {{ room_code }}</h2>
-
-  {% if not player_name %}
-
-  <form method="POST" action="/join-room">
-    <input type="hidden" name="room" value="{{ room_code }}">
-    <input type="text" name="name" placeholder="Enter your name" required>
-    <br><br>
-    <button type="submit">Join Game</button>
-  </form>
-  {% else %}
-
-  <p>You are: <strong>{{ player_name }}</strong></p>
-  <button onclick="copyLink()">Share Room Link</button>
-  <br><br>
-  <button id="readyBtn" onclick="toggleReady()">I'm Ready</button>
-  {% endif %}
-
-  <div id="room-status" style="margin-top: 2em;"></div>
-
-  <script>
-    const roomCode = "{{ room_code }}";
-    const playerName = "{{ player_name | safe }}";
-    let readyState = false;
-
-    function copyLink() {
-      const link = `${location.origin}/join/${roomCode}`;
-      navigator.clipboard.writeText(link);
-      alert("Room link copied:\n" + link);
-    }
-
-    async function toggleReady() {
-      const res = await fetch(`/toggle-ready/${roomCode}`, { method: "POST" });
-      const data = await res.json();
-      if (data.status === "started") {
-        window.location.href = "/game";
-      } else {
-        readyState = data.ready;
-        updateReadyButton();
-      }
-    }
-
-    function updateReadyButton() {
-      const btn = document.getElementById("readyBtn");
-      if (btn) {
-        btn.textContent = readyState ? "Cancel Ready" : "I'm Ready";
-      }
-    }
-
-    async function pollRoom() {
-      const res = await fetch(`/room-state/${roomCode}`);
-      const data = await res.json();
-      if (data.error) return;
-
-      const div = document.getElementById("room-status");
-      const names = data.players;
-      const ready = data.ready || {};
-
-      let listHtml = "<h4>Players joined:</h4><ul>";
-      for (const name of names) {
-        const isReady = ready[name];
-        listHtml += `<li>${name}${isReady ? " <span class='ready'>(Ready)</span>" : ""}</li>`;
-      }
-      listHtml += "</ul>";
-      div.innerHTML = listHtml;
-
-      if (data.started) {
-        window.location.href = "/game";
-      }
-    }
-
-    setInterval(pollRoom, 1000);
-    pollRoom();
-  </script>
-</body>
-</html> -->
