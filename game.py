@@ -326,7 +326,7 @@ class Game:
         non_jokers = [card for card in cards if not card.is_joker()]
         if not non_jokers:
             return False
-        first_rank = non_jers[0].rank
+        first_rank = non_jokers[0].rank
         return all(card.rank == first_rank for card in non_jokers)
 
     def is_valid_series(self, cards):
