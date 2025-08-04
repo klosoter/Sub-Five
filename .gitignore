@@ -2,3 +2,4 @@
 __pycache__/game.cpython-39.pyc
 __pycache__/server.cpython-39.pyc
 .DS_Store
+.env
