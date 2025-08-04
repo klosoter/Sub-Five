@@ -35,10 +35,14 @@
     const playerName = "{{ player_name | safe }}";
     let readyState = false;
 
-    document.getElementById("leave-room-btn").addEventListener("click", async () => {
-      await fetch("/leave", { method: "POST" });
-      window.location.href = "/";
-    });
+    const leaveBtn = document.getElementById("leave-room-btn");
+    if (leaveBtn) {
+      leaveBtn.addEventListener("click", async () => {
+        await fetch("/leave", { method: "POST" });
+        window.location.href = "/";
+      });
+    }
+
 
     function copyLink() {
       const link = `${location.origin}/join/${roomCode}`;
