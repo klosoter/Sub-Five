@@ -298,7 +298,8 @@ playing-card.selected {
 
 /* === End Game Button Override === */
 #end-game,
-#leave-room-btn {
+#leave-room-btn,
+.end-game {
   top: 2%;
   right: 22%;
   background: #a00;
@@ -402,7 +403,7 @@ a {
 /* === Close Button === */
 .popup-close {
   margin-bottom: -1vw;
-  margin-top: -1vw;
+  /* margin-top: -1vw; */
   padding: 0.5vw 1.2vw;
   font-size: 1vw;
 }

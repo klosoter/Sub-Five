@@ -252,6 +252,7 @@ class Game:
 
         return cards, drawn
 
+
     def determine_winners(self):
         if all(p.score < 100 for p in self.players):
             return []
@@ -292,11 +293,10 @@ class Game:
         hand_values = values
         scores = self.scores
 
-        lowest_players = [p.name for p in self.players if p.score == min(scores.values())]
-        lowest_player = next(p for p in self.players if p.name == lowest_players[0])
-        self.current_player_index = self.players.index(lowest_player)
+        round_winner = next(p for p in self.players if p.hand_value() == lowest_value)
+        self.current_player_index = self.players.index(round_winner)
 
-        return hands, hand_values, scores, penalty_applied, lowest_players
+        return hands, hand_values, scores, penalty_applied
 
     def reset_for_next_round(self):
         self.deck = Deck()
@@ -306,8 +306,8 @@ class Game:
             for _ in range(5):
                 player.draw_card(self.deck.draw())
 
-        self.current_player_index = min(
-            range(len(self.players)), key=lambda i: self.players[i].score)
+#         self.current_player_index = min(
+#             range(len(self.players)), key=lambda i: self.players[i].score)
         self.game_over = False
         self.winners = []
         self.round_ended = False
@@ -341,12 +341,13 @@ class Game:
         base_seq = "JQKA234567890JQKA"
         seq_variants = [base_seq, base_seq[::-1]]
         cards_string = "".join(" " if card.is_joker() else ("0" if card.rank == "10" else card.rank) for card in cards).strip()
+        print(cards_string)
 
         for seq_string in seq_variants:
             valid = True
-            index = 0
+            index = None
             for ch in cards_string:
-                if index == 0:
+                if index == None:
                     index = seq_string.find(ch)
                     continue
                 if ch == " ":

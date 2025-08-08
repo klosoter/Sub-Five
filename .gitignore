@@ -4,3 +4,10 @@ __pycache__/server.cpython-39.pyc
 .DS_Store
 .env
 __pycache__/game.cpython-313.pyc
+.idea/codeStyles/codeStyleConfig.xml
+.idea/inspectionProfiles/profiles_settings.xml
+.idea/inspectionProfiles/Project_Default.xml
+.idea/misc.xml
+.idea/modules.xml
+.idea/Sub-Five.iml
+.idea/vcs.xml

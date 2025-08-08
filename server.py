@@ -1,3 +1,4 @@
+# lsof -ti tcp:5000 | xargs ps -p | grep python | awk '{print $1}' | xargs kill -9 python server.py
 from flask import Flask, request, jsonify, render_template, session, redirect, url_for, g
 import uuid
 import redis
@@ -49,7 +50,7 @@ def build_game_over_notice(winners):
 
 
 
-def build_round_summary_popup(round_ender, hands, hand_values, scores, penalty_applied, lowest_players):
+def build_round_summary_popup(round_ender, hands, hand_values, scores, penalty_applied):
     def card_html(card_str):
         if card_str.startswith("JOKER"):
             suit = card_str[-1]
@@ -83,9 +84,6 @@ def build_round_summary_popup(round_ender, hands, hand_values, scores, penalty_a
         if name == round_ender and penalty_applied:
             row_class = "loser"
         round_pts_display = f"{round_pts} (+15)" if row_class == "loser" else round_pts
-
-        # if name == round_ender and not penalty_applied:
-        #     row_class = "winner"
 
         row = f"""
         <tr class="{row_class}">
@@ -228,21 +226,21 @@ def join_room(code):
 
 @app.route("/join-room", methods=["POST"])
 def post_join_room():
-    """Handle name submission and join room."""
-    code = request.form.get("room")
+    code = request.form.get("room", "").upper()
     name = request.form.get("name", "").strip()
-
     room = load_room(code)
-    if not room or not name:
+
+    if not room:
         return redirect("/")
+
+    if not name or name in room["players"]:
+        return render_template("join.html", room_code=code, player_name=None, clear_input=True)
 
     session["room"] = code
     session["player_name"] = name
-
-    if name not in room["players"]:
-        room["players"].append(name)
-        room["ready"][name] = False
-        save_room(code, room)
+    room["players"].append(name)
+    room["ready"][name] = False
+    save_room(code, room)
 
     return redirect(url_for("join_room", code=code))
 
@@ -422,7 +420,6 @@ def state():
     save_room(code, room)
     
     gameOver = game.game_over
-
     return jsonify({
         "players": [
             {
@@ -442,7 +439,7 @@ def state():
         "readyPlayers": list(game.ready_players),
         "roundSummaryPopup": getattr(game, "round_summary_html", ""),
         "gameOver": gameOver,
-        "gameOverNotice": gameOverNotice
+        "gameOverNotice": gameOverNotice,
     })
 
 
@@ -469,9 +466,15 @@ def handle_play_cards():
         for s in cards_raw
     ]
 
+
+
     try:
         player = next(p for p in game.players if p.name == player_name)
         played, drawn = game.play_cards(player, cards, draw)
+        if not (game.is_valid_series(cards) or game.is_valid_set(cards)):
+            print(cards, game.is_valid_series(cards))
+            return jsonify({"error": "Invalid move."}), 400
+
         game.next_turn()
         game.last_action = {
             "player": player.name,
@@ -502,7 +505,7 @@ def end_round():
             game = Game.deserialize(game)
         room["game"] = game  # keep deserialized for now
 
-        hands, hand_values, scores, penalty_applied, lowest_players = game.end_game(
+        hands, hand_values, scores, penalty_applied = game.end_game(
             player)
         game.round_ended = True
         game.ready_players = set()
@@ -521,30 +524,18 @@ def end_round():
             hand_values=hand_values,
             scores=scores,
             penalty_applied=penalty_applied,
-            lowest_players=lowest_players,
-            # game_over=game.game_over
         )
 
         room["players"] = [p.name for p in game.players]
         room["game"] = game.serialize()
         save_room(code, room)
 
-        print(game.winners)
-        print(game.game_over_notice)
-        return jsonify({
-            "hands": hands,
-            "hand_values": hand_values,
-            "scores": scores,
-            "penalty_applied": penalty_applied,
-            "lowest_player": lowest_players,
-            "round_ender": player,
-            "roundSummaryPopup": game.round_summary_html,
-            "gameOverNotice": game.game_over_notice,
-            "gameOver": game.game_over,
-            "readyPlayers": list(room["ready"]),
-        })
+        print("end round")
+
+        return '', 204
 
     except Exception as e:
+        print("error", e)
         return jsonify({"error": str(e)}), 400
 
 

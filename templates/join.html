@@ -2,8 +2,8 @@
 <html lang="en">
 
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Sub- Five Join Room {{ room_code }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='join.css') }}">
@@ -17,7 +17,7 @@
     {% if not player_name %}
     <form method="POST" action="/join-room" class="join-form">
       <input type="hidden" name="room" value="{{ room_code }}">
-      <input type="text" name="name" placeholder="Enter your name" required>
+      <input type="text" name="name" id="nameInput" placeholder="Enter your name" required autofocus>
       <button type="submit">Join Game</button>
     </form>
     {% else %}
@@ -43,11 +43,9 @@
       });
     }
 
-
     function copyLink() {
       const link = `${location.origin}/join/${roomCode}`;
       navigator.clipboard.writeText(link);
-      // alert("Room link copied:\n" + link);
     }
 
     async function toggleReady() {
@@ -93,6 +91,16 @@
     setInterval(pollRoom, 1000);
     pollRoom();
   </script>
-</body>
 
+  {% if clear_input %}
+  <script>
+    const nameInput = document.getElementById("nameInput");
+    if (nameInput) {
+      nameInput.value = "";
+      nameInput.placeholder = "Name already taken. Try another.";
+    }
+    alert("Name already taken. Please choose a different name.");
+  </script>
+  {% endif %}
+</body>
 </html>
