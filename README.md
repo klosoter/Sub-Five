@@ -3,7 +3,7 @@
 
 **Sub-Five** is a real-time, multiplayer card game implemented as a server-authoritative web application.
 
-Currently it is hosted on (sub-five.klosoter.com)[https://sub-five.klosoter.com "Sub-Five"]
+Currently it is hosted on https://sub-five.klosoter.com
 
 This repository is a systems-focused project: the goal is correctness, determinism, and clear separation between **game rules**, **state management**, and **UI rendering** — not frontend abstraction or visual polish.
 
