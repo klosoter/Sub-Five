@@ -12,3 +12,6 @@ __pycache__/game.cpython-313.pyc
 .idea/Sub-Five.iml
 .idea/vcs.xml
 .DS_Store
+/backend/__pycache__
+*.pyc
+/frontend/node_modules
