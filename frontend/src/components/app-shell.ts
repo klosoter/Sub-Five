@@ -4,11 +4,13 @@ import { gameStore } from '../state/game-store.js';
 import './lobby/lobby-page.js';
 import './join/join-page.js';
 import './game/game-page.js';
+import './game/spectator-page.js';
 
 type Route =
   | { page: 'lobby' }
   | { page: 'join'; code: string }
-  | { page: 'game'; code: string };
+  | { page: 'game'; code: string }
+  | { page: 'spectate'; code: string };
 
 @customElement('app-shell')
 export class AppShell extends LitElement {
@@ -33,6 +35,12 @@ export class AppShell extends LitElement {
       return;
     }
 
+    const spectateMatch = hash.match(/^\/spectate\/(.+)$/);
+    if (spectateMatch) {
+      this.route = { page: 'spectate', code: spectateMatch[1] };
+      return;
+    }
+
     const gameMatch = hash.match(/^\/game\/(.+)$/);
     if (gameMatch) {
       const code = gameMatch[1];
@@ -51,6 +59,8 @@ export class AppShell extends LitElement {
         return html`<join-page .roomCode=${this.route.code}></join-page>`;
       case 'game':
         return html`<game-page></game-page>`;
+      case 'spectate':
+        return html`<spectator-page .roomCode=${this.route.code}></spectator-page>`;
       default:
         return html`<lobby-page></lobby-page>`;
     }

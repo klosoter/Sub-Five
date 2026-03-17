@@ -18,6 +18,7 @@ export class GamePage extends LitElement {
   @state() private _tick = 0;
   @state() private errorMsg = '';
   @state() private botThinking = false;
+  private failCount = 0;
   private unsubscribe?: () => void;
   private errorTimer?: number;
   private botTimer?: number;
@@ -249,10 +250,23 @@ export class GamePage extends LitElement {
     try {
       const res = await fetch(`/api/lobby/rooms/${gameStore.roomCode}/game-state`, { credentials: 'include' });
       if (res.ok) {
+        this.failCount = 0;
         const data = await res.json();
         gameStore.updateFromServer(data);
+      } else {
+        this.failCount++;
+        if (this.failCount >= 5) {
+          window.location.hash = '#/';
+          return;
+        }
       }
-    } catch { /* retry */ }
+    } catch {
+      this.failCount++;
+      if (this.failCount >= 5) {
+        window.location.hash = '#/';
+        return;
+      }
+    }
     this.pollTimer = window.setTimeout(() => this.startPolling(), 1000);
   }
 
@@ -287,7 +301,7 @@ export class GamePage extends LitElement {
 
   private checkBotTurn() {
     const s = gameStore;
-    if (!s.isMyTurn && !s.roundEnded && s.currentPlayer.startsWith('Bot-')) {
+    if (!s.isMyTurn && !s.roundEnded && (s.currentPlayer.startsWith('Bot-') || s.currentPlayer.startsWith('RL-'))) {
       // Only start a new timer if one isn't already pending
       // (polling calls this every second — don't reset the 1200ms timer!)
       if (!this.botTimer) {

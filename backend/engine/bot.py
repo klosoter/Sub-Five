@@ -190,10 +190,10 @@ class BotStrategy:
 
         if hv <= 5:
             if hv <= 3:
-                # At 3, end unless an opponent has even fewer cards
-                if not opponent_threatening:
+                # At 3, end unless an opponent has just 1 card (could be an Ace)
+                if min_opp_cards > 1:
                     return True
-                # Even with a threatening opponent, 0-1 is safe enough
+                # Even with 1-card opponent, hv <= 1 is safe
                 if hv <= 1:
                     return True
             # At 4-5, factor in both unseen low cards and opponent card counts

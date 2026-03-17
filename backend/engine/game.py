@@ -26,6 +26,7 @@ class Game:
         self.game_over = False
         self.winners = []
         self.last_round_data = None  # Stored so refresh during round-end works
+        self.round_number = 1
         self.deal_initial_hands()
 
     def serialize(self):
@@ -40,6 +41,7 @@ class Game:
             "game_over": self.game_over,
             "winners": self.winners,
             "last_round_data": self.last_round_data,
+            "round_number": self.round_number,
         }
 
     @classmethod
@@ -55,6 +57,7 @@ class Game:
         game.game_over = data["game_over"]
         game.winners = data["winners"]
         game.last_round_data = data.get("last_round_data")
+        game.round_number = data.get("round_number", 1)
         return game
 
     @property
@@ -167,12 +170,11 @@ class Game:
             "penalty_applied": result.penalty_applied,
         }
 
-        # Set next round starter to the round winner (lowest hand)
-        lowest_value = min(result.hand_values.values())
-        round_winner = next(
-            p for p in self.players if result.hand_values[p.name] == lowest_value
-        )
-        self.current_player_index = self.players.index(round_winner)
+        # Set next round starter to the round winner (whoever scored 0 points)
+        zero_scorers = [p for p in self.players if result.round_points[p.name] == 0]
+        if zero_scorers:
+            self.current_player_index = self.players.index(zero_scorers[0])
+        # else: keep current index (shouldn't happen with normal rules)
 
         # Check game over
         if is_game_over(self.players):
@@ -211,6 +213,7 @@ class Game:
         self.winners = []
         self.last_action = None
         self.last_round_data = None
+        self.round_number += 1
 
     def get_state_for_player(self, player_name):
         """Return game state personalized for a specific player.

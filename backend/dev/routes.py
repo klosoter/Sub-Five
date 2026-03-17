@@ -1,21 +1,49 @@
 """Dev-only routes for testing without multiple browsers."""
+import os
 import uuid
 from flask import Blueprint, request, jsonify, session
 from ..rooms import manager
 from ..engine.game import Game
+from ..engine.card import sort_hand
 from ..engine.bot import BotStrategy
 
 dev_bp = Blueprint("dev", __name__, url_prefix="/api/dev")
 
 # Store bot strategies per room (keyed by room code)
-_bot_strategies: dict[str, dict[str, BotStrategy]] = {}
+# Values can be BotStrategy or RLBotStrategy
+_bot_strategies: dict[str, dict[str, object]] = {}
+
+# Default RL model path
+_RL_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "models", "subfive_rl.pt")
+_RL_IMITATE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "models", "subfive_imitate.pt")
 
 
-def _get_bot_strategy(room_code: str, bot_name: str) -> BotStrategy:
+def _get_rl_model_path() -> str | None:
+    """Return path to best available RL model, or None."""
+    for p in [_RL_MODEL_PATH, _RL_IMITATE_PATH]:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _make_bot_strategy(bot_type: str = "heuristic"):
+    """Create a bot strategy instance. 'mixed' randomly picks rl or heuristic."""
+    if bot_type == "mixed":
+        import random
+        bot_type = random.choice(["rl", "heuristic"])
+    if bot_type == "rl":
+        model_path = _get_rl_model_path()
+        if model_path:
+            from ..engine.rl.agent import RLBotStrategy
+            return RLBotStrategy(model_path)
+    return BotStrategy()
+
+
+def _get_bot_strategy(room_code: str, bot_name: str, bot_type: str = "heuristic"):
     if room_code not in _bot_strategies:
         _bot_strategies[room_code] = {}
     if bot_name not in _bot_strategies[room_code]:
-        _bot_strategies[room_code][bot_name] = BotStrategy()
+        _bot_strategies[room_code][bot_name] = _make_bot_strategy(bot_type)
     return _bot_strategies[room_code][bot_name]
 
 
@@ -30,12 +58,21 @@ def quick_game():
     data = request.get_json(silent=True) or {}
     bot_count = min(data.get("bots", 2), 3)  # max 3 bots (4 player game)
     player_name = data.get("name", "Dev")
+    bot_type = data.get("bot_type", "heuristic")
 
     code = str(uuid.uuid4())[:6].upper()
     players = [player_name]
     bot_names = []
     for i in range(bot_count):
-        bot_name = f"Bot-{i + 1}"
+        if bot_type == "mixed":
+            import random
+            t = random.choice(["rl", "heuristic"])
+            prefix = "RL" if t == "rl" else "Bot"
+        elif bot_type == "rl":
+            prefix = "RL"
+        else:
+            prefix = "Bot"
+        bot_name = f"{prefix}-{i + 1}"
         players.append(bot_name)
         bot_names.append(bot_name)
 
@@ -51,15 +88,17 @@ def quick_game():
         "game": game.serialize(),
         "started": True,
         "bots": bot_names,
+        "bot_type": bot_type,
     }
     manager.save_room(code, room_data)
 
     session["room"] = code
     session["player_name"] = player_name
 
-    # Initialize bot strategies
+    # Initialize bot strategies (infer type from name for mixed)
     for bot_name in bot_names:
-        _get_bot_strategy(code, bot_name)
+        t = "rl" if bot_name.startswith("RL-") else "heuristic"
+        _get_bot_strategy(code, bot_name, t)
 
     return jsonify({"code": code, "players": players}), 201
 
@@ -83,7 +122,8 @@ def trigger_bot_action(code):
     if game.round_ended:
         return jsonify({"error": "Round ended"}), 400
 
-    strategy = _get_bot_strategy(code, current.name)
+    bot_type = "rl" if current.name.startswith("RL-") else room.get("bot_type", "heuristic")
+    strategy = _get_bot_strategy(code, current.name, bot_type)
 
     # Feed any recent action to the strategy
     if game.last_action:
@@ -152,9 +192,10 @@ def bot_ready(code):
     if all_ready:
         game.start_next_round()
         # Reset bot strategies for new round
+        bot_type = room.get("bot_type", "heuristic")
         if code in _bot_strategies:
             for bot_name in bots:
-                _bot_strategies[code][bot_name] = BotStrategy()
+                _bot_strategies[code][bot_name] = _make_bot_strategy(bot_type)
 
     manager.save_game(code, game, room)
 
@@ -162,3 +203,121 @@ def bot_ready(code):
         "all_ready": all_ready,
         "ready_players": list(game.ready_players),
     })
+
+
+@dev_bp.route("/bot-game", methods=["POST"])
+def bot_game():
+    """Create a bot-only game (no human player) for spectating.
+
+    JSON body:
+        bots: number of bots (default 3, min 2, max 4)
+        bot_type: "heuristic" (default) or "rl"
+    """
+    data = request.get_json(silent=True) or {}
+    bot_count = max(2, min(data.get("bots", 3), 4))
+
+    code = str(uuid.uuid4())[:6].upper()
+    bot_type = data.get("bot_type", "heuristic")
+
+    if bot_type == "mixed":
+        import random
+        bot_names = []
+        for i in range(bot_count):
+            t = random.choice(["rl", "heuristic"])
+            prefix = "RL" if t == "rl" else "Bot"
+            bot_names.append(f"{prefix}-{i + 1}")
+    elif bot_type == "rl":
+        bot_names = [f"RL-{i + 1}" for i in range(bot_count)]
+    else:
+        bot_names = [f"Bot-{i + 1}" for i in range(bot_count)]
+
+    game = Game(bot_names)
+    room_data = {
+        "code": code,
+        "host": bot_names[0],
+        "password": None,
+        "max_players": bot_count,
+        "turn_timer": 0,
+        "players": bot_names,
+        "ready": {p: True for p in bot_names},
+        "game": game.serialize(),
+        "started": True,
+        "bots": bot_names,
+        "spectator_only": True,
+        "bot_type": bot_type,
+    }
+    manager.save_room(code, room_data)
+
+    # Initialize bot strategies (for mixed, infer type from name)
+    for bot_name in bot_names:
+        t = "rl" if bot_name.startswith("RL-") else "heuristic"
+        _get_bot_strategy(code, bot_name, t)
+
+    return jsonify({"code": code, "players": bot_names}), 201
+
+
+@dev_bp.route("/spectate/<code>", methods=["GET"])
+def spectate(code):
+    """Get full game state with ALL hands visible for spectating."""
+    game, room = manager.get_game(code)
+    if not game:
+        return jsonify({"error": "Game not found"}), 404
+
+    players = []
+    for p in game.players:
+        players.append({
+            "name": p.name,
+            "hand": [str(c) for c in sort_hand(p.hand)],
+            "hand_value": p.hand_value(),
+            "score": p.score,
+        })
+
+    last_action = game.last_action
+
+    result = {
+        "players": players,
+        "pileTop": str(game.play_pile[-1]) if game.play_pile else None,
+        "deckCount": len(game.deck),
+        "currentPlayer": game.current_player().name,
+        "roundEnded": game.round_ended,
+        "gameOver": game.game_over,
+        "scores": {p.name: p.score for p in game.players},
+        "lastAction": last_action,
+        "round": game.round_number,
+    }
+
+    if game.round_ended and game.last_round_data:
+        result["roundData"] = {
+            **game.last_round_data,
+            "game_over": game.game_over,
+            "winners": game.winners,
+        }
+
+    if game.game_over:
+        result["winners"] = game.winners
+
+    return jsonify(result)
+
+
+@dev_bp.route("/spectate-ready/<code>", methods=["POST"])
+def spectate_ready(code):
+    """Make all bots ready and start next round (spectator control)."""
+    game, room = manager.get_game(code)
+    if not game or not game.round_ended:
+        return jsonify({"error": "Round not ended"}), 400
+
+    bots = room.get("bots", [])
+    for bot_name in bots:
+        game.mark_ready(bot_name)
+
+    game.start_next_round()
+
+    # Reset bot strategies for new round
+    bot_type = room.get("bot_type", "heuristic")
+    if code in _bot_strategies:
+        for bot_name in bots:
+            _bot_strategies[code][bot_name] = _make_bot_strategy(bot_type)
+
+    manager.save_game(code, game, room)
+
+    return jsonify({"ok": True})

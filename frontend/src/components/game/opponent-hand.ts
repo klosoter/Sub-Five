@@ -1,5 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
+import './card-element.js';
 
 @customElement('opponent-hand')
 export class OpponentHand extends LitElement {
@@ -8,6 +9,9 @@ export class OpponentHand extends LitElement {
   @property({ type: Number }) score = 0;
   @property({ type: Boolean }) isCurrentTurn = false;
   @property() position: 'top' | 'left' | 'right' = 'top';
+  /** When provided, render actual cards face-up (spectator mode). */
+  @property({ type: Array }) cards: string[] | null = null;
+  @property({ type: Number }) handValue: number | null = null;
 
   static styles = css`
     :host { display: block; }
@@ -19,6 +23,10 @@ export class OpponentHand extends LitElement {
       align-items: center;
       z-index: 5;
       width: 15vw;
+    }
+
+    .opponent-box.open-hand {
+      width: auto;
     }
 
     .opponent-box.top {
@@ -68,19 +76,55 @@ export class OpponentHand extends LitElement {
       background: white url("/card-back.svg") center center / cover no-repeat;
       box-sizing: border-box;
     }
+
+    .open-cards-wrapper {
+      display: flex;
+      justify-content: center;
+    }
+
+    .open-cards {
+      display: flex;
+      gap: 0.3vw;
+      transform: scale(1.5);
+      transform-origin: center top;
+    }
+
+    /* Reserve space for scaled cards so label doesn't overlap.
+       mini cards are 2.5vw * 1.39 tall; at 1.5x that's ~5.2vw.
+       Original height is ~3.5vw, so extra = ~1.7vw */
+    .opponent-box.open-hand .player-label {
+      margin-top: 2vw;
+    }
   `;
 
   render() {
-    const backs = [];
-    for (let i = 0; i < this.cardCount; i++) {
-      backs.push(html`<div class="card-back"></div>`);
-    }
+    const hasOpenCards = this.cards && this.cards.length > 0;
+
+    const handContent = hasOpenCards
+      ? html`
+          <div class="open-cards-wrapper">
+            <div class="open-cards">
+              ${this.cards!.map(card => html`
+                <card-element mini .card=${card}></card-element>
+              `)}
+            </div>
+          </div>
+        `
+      : html`
+          <div class="opponent-hand">
+            ${Array.from({ length: this.cardCount }, () => html`<div class="card-back"></div>`)}
+          </div>
+        `;
+
+    const label = this.handValue != null
+      ? `${this.name} (${this.score}) [${this.handValue}]`
+      : `${this.name} (${this.score})`;
 
     return html`
-      <div class="opponent-box ${this.position}">
-        <div class="opponent-hand">${backs}</div>
+      <div class="opponent-box ${this.position} ${hasOpenCards ? 'open-hand' : ''}">
+        ${handContent}
         <div class="player-label ${this.isCurrentTurn ? 'current-turn' : ''}">
-          ${this.name} (${this.score})
+          ${label}
         </div>
       </div>
     `;

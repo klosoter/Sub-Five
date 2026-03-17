@@ -9,6 +9,7 @@ type RoomInfo = {
   started: boolean;
   max_players: number;
   has_password: boolean;
+  spectator_only?: boolean;
 };
 
 @customElement('lobby-page')
@@ -17,6 +18,7 @@ export class LobbyPage extends LitElement {
   @state() showAuth = false;
   @state() showCreate = false;
   @state() _tick = 0;
+  @state() botType: 'heuristic' | 'rl' | 'mixed' = 'heuristic';
   private refreshTimer?: number;
   private unsubAuth?: () => void;
 
@@ -128,6 +130,35 @@ export class LobbyPage extends LitElement {
 
     .btn-dev {
       background: linear-gradient(135deg, #818cf8, #6366f1);
+      color: white;
+    }
+
+    .btn-spectate {
+      background: linear-gradient(135deg, #fbbf24, #f59e0b);
+      color: #1a1a2e;
+    }
+
+    /* Bot type selector */
+    .bot-type-selector {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 0.5rem;
+      padding: 0.3rem;
+    }
+
+    .bot-type-selector button {
+      padding: 0.4rem 0.8rem;
+      font-size: 0.8rem;
+      border-radius: 0.4rem;
+      background: transparent;
+      color: rgba(255, 255, 255, 0.5);
+      border: none;
+    }
+    .bot-type-selector button:hover { color: white; }
+    .bot-type-selector button.active {
+      background: rgba(255, 255, 255, 0.15);
       color: white;
     }
 
@@ -286,11 +317,34 @@ export class LobbyPage extends LitElement {
     const res = await fetch('/api/dev/quick-game', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bots: 2, name: authStore.displayName || 'Dev' }),
+      body: JSON.stringify({ bots: 2, name: authStore.displayName || 'Dev', bot_type: this.botType }),
       credentials: 'include',
     });
     const data = await res.json();
     window.location.hash = `#/game/${data.code}`;
+  }
+
+  private async watchBots() {
+    try {
+      const res = await fetch('/api/dev/bot-game', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bots: 3, bot_type: this.botType }),
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        console.error('Failed to create bot game:', res.status);
+        return;
+      }
+      const data = await res.json();
+      if (!data.code) {
+        console.error('No room code in response:', data);
+        return;
+      }
+      window.location.hash = `#/spectate/${data.code}`;
+    } catch (e) {
+      console.error('Failed to create bot game:', e);
+    }
   }
 
   private async deleteRoom(code: string, e: Event) {
@@ -339,7 +393,13 @@ export class LobbyPage extends LitElement {
 
         <div class="actions">
           <button class="btn-create" @click=${this.createRoom}>Create Game</button>
-          <button class="btn-dev" @click=${this.quickGame}>Quick Play vs Bots</button>
+          <button class="btn-dev" @click=${this.quickGame}>Play vs Bots</button>
+          <button class="btn-spectate" @click=${() => this.watchBots()}>Watch Bots</button>
+          <div class="bot-type-selector">
+            <button class=${this.botType === 'heuristic' ? 'active' : ''} @click=${() => this.botType = 'heuristic'}>Heuristic</button>
+            <button class=${this.botType === 'rl' ? 'active' : ''} @click=${() => this.botType = 'rl'}>RL</button>
+            <button class=${this.botType === 'mixed' ? 'active' : ''} @click=${() => this.botType = 'mixed'}>Mixed</button>
+          </div>
         </div>
 
         <div class="rooms-section">
@@ -369,12 +429,23 @@ export class LobbyPage extends LitElement {
                 </div>
               `)}
               ${activeRooms.map(room => html`
-                <div class="room-card" style="opacity: 0.6;">
+                <div class="room-card" style="opacity: ${room.spectator_only ? '1' : '0.6'};">
                   <div class="room-card-header">
                     <span class="room-code">${room.code}</span>
-                    <span class="room-status in-progress">In Progress</span>
+                    <span class="room-status in-progress">
+                      ${room.spectator_only ? 'Bots Playing' : 'In Progress'}
+                    </span>
                   </div>
                   <div class="room-players">${room.players.join(', ')}</div>
+                  ${room.spectator_only ? html`
+                    <div class="room-actions">
+                      <button class="btn-spectate" style="flex:1; font-size:0.85rem; padding:0.4rem 1.2rem;"
+                        @click=${() => window.location.hash = `#/spectate/${room.code}`}>
+                        Spectate
+                      </button>
+                      <button class="btn-delete" @click=${(e: Event) => this.deleteRoom(room.code, e)}>✕</button>
+                    </div>
+                  ` : nothing}
                 </div>
               `)}
             </div>

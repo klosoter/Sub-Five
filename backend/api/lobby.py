@@ -18,6 +18,7 @@ def list_rooms():
             "started": room.get("started", False),
             "max_players": room.get("max_players", 4),
             "has_password": bool(room.get("password")),
+            "spectator_only": room.get("spectator_only", False),
         }
         for code, room in rooms
     ])
@@ -39,7 +40,8 @@ def create_room():
 @lobby_bp.route("/rooms/<code>", methods=["DELETE"])
 def delete_room(code):
     manager.delete_room(code)
-    session.clear()
+    session.pop("room", None)
+    session.pop("player_name", None)
     return jsonify({"status": "deleted"})
 
 
@@ -66,7 +68,8 @@ def leave_room(code):
         return jsonify({"error": "Not in room"}), 400
 
     manager.remove_player(code, name)
-    session.clear()
+    session.pop("room", None)
+    session.pop("player_name", None)
     return jsonify({"status": "left"})
 
 
