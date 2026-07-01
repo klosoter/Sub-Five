@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin · Sub-Five</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icon-192.png') }}">
+</head>
+<body class="menu">
+  <div class="page">
+    <header class="topbar">
+      <a class="brand" href="/"><span class="pip">♠</span> Sub-Five</a>
+      <div class="topbar-actions">
+        <a class="btn btn--ghost" href="/">← Lobby</a>
+        <a class="btn btn--ghost" href="/account">Account</a>
+      </div>
+    </header>
+
+    <div class="hero" style="padding:1rem 0 1.5rem">
+      <h1>🛡 Admin</h1>
+      <p>Clean up games and accounts.</p>
+    </div>
+
+    <h2 class="section-title">
+      Games <span class="count-pill">{{ rooms|length }}</span>
+      {% if rooms %}
+      <form method="POST" action="/admin/clear-rooms" style="margin-left:auto"
+            onsubmit="return confirm('Delete ALL {{ rooms|length }} games? Players in them will be dropped.')">
+        <button class="btn btn--danger" type="submit">Clear all games</button>
+      </form>
+      {% endif %}
+    </h2>
+    <div class="panel" style="padding:0.5rem">
+      {% if rooms %}
+      <table class="data-table">
+        <thead><tr><th>Code</th><th>Status</th><th>Players</th><th class="num">Action</th></tr></thead>
+        <tbody>
+          {% for r in rooms %}
+          <tr>
+            <td style="font-family:var(--font-mono);color:var(--gold)">{{ r.code }}</td>
+            <td><span class="status-pill {{ 'playing' if r.started else 'waiting' }}">{{ 'In progress' if r.started else 'Waiting' }}</span></td>
+            <td style="color:var(--text-secondary)">{{ r.players|join(', ') if r.players else '—' }}</td>
+            <td class="num">
+              <form method="POST" action="/admin/delete-room/{{ r.code }}" style="display:inline"
+                    onsubmit="return confirm('Delete game {{ r.code }}?')">
+                <button class="btn btn--danger" type="submit">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty" style="border:none">No active games.</div>
+      {% endif %}
+    </div>
+
+    <h2 class="section-title">Users <span class="count-pill">{{ users|length }}</span></h2>
+    <div class="panel" style="padding:0.5rem">
+      <table class="data-table">
+        <thead><tr><th>Display name</th><th>Username</th><th class="num">Games</th><th class="num">Wins</th><th>Joined</th><th class="num">Action</th></tr></thead>
+        <tbody>
+          {% for u in users %}
+          <tr class="{{ 'me' if u.id == user.id else '' }}">
+            <td>{{ u.display_name }}{% if u.id == user.id %} <span style="color:var(--text-muted)">(you)</span>{% endif %}</td>
+            <td style="color:var(--text-secondary)">@{{ u.username }}</td>
+            <td class="num">{{ u.games }}</td>
+            <td class="num">{{ u.wins }}</td>
+            <td style="color:var(--text-muted)">{{ u.created_at }}</td>
+            <td class="num">
+              {% if u.id != user.id %}
+              <form method="POST" action="/admin/delete-user/{{ u.id }}" style="display:inline"
+                    onsubmit="return confirm('Delete user {{ u.display_name }} and all their match history?')">
+                <button class="btn btn--danger" type="submit">Delete</button>
+              </form>
+              {% else %}<span style="color:var(--text-muted)">—</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</body>
+</html>

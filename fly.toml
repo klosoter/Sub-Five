@@ -1,12 +1,14 @@
-# fly.toml app configuration file generated for sub-five on 2025-08-02T23:33:13-04:00
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
+# fly.toml — Sub-Five monolith (server.py). Rooms live in Redis; accounts/stats
+# live in SQLite on the mounted volume below so they survive deploys/restarts.
 
 app = 'sub-five'
 primary_region = 'ams'
 
 [build]
+
+[env]
+  FLASK_ENV = 'production'
+  DATABASE_PATH = '/data/accounts.db'
 
 [http_service]
   internal_port = 8080
@@ -16,7 +18,15 @@ primary_region = 'ams'
   min_machines_running = 0
   processes = ['app']
 
+# Durable SQLite storage. Create once with:
+#   fly volumes create sub_five_data --size 1 --region ams
+# NOTE: a volume is attached to a single machine — keep this app at one machine
+# (do not scale count > 1) or move accounts to Postgres for multi-machine.
+[[mounts]]
+  source = 'sub_five_data'
+  destination = '/data'
+
 [[vm]]
-  memory = '1gb'
+  memory = '512mb'
   cpu_kind = 'shared'
   cpus = 1

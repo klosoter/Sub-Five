@@ -1,1 +1,1 @@
-web: gunicorn -k eventlet -w 1 backend.wsgi:app
+web: gunicorn server:app --bind 0.0.0.0:8080 --workers 2 --timeout 120

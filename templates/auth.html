@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ 'Sign in' if mode == 'login' else 'Create account' }} · Sub-Five</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icon-192.png') }}">
+</head>
+<body class="menu">
+  <div class="center-page">
+    <div class="panel auth-card">
+      <h1>♠ Sub-Five</h1>
+      <p class="sub">Sign in to play, track stats and climb the leaderboard.</p>
+
+      <div class="segmented">
+        <a href="/login" class="{{ 'active' if mode == 'login' else '' }}">Sign in</a>
+        <a href="/register" class="{{ 'active' if mode == 'register' else '' }}">Register</a>
+      </div>
+
+      {% if error %}<div class="form-error">{{ error }}</div>{% endif %}
+
+      {% if mode == 'login' %}
+      <form method="POST" action="/login" autocomplete="on">
+        <input type="hidden" name="next" value="{{ next or '' }}">
+        <div class="field">
+          <label for="username">Username</label>
+          <input id="username" name="username" value="{{ username or '' }}" placeholder="your_handle"
+                 autocomplete="username" autofocus required>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" placeholder="••••••••"
+                 autocomplete="current-password" required>
+        </div>
+        <button class="btn btn--primary btn--block btn--lg" type="submit">Sign in</button>
+      </form>
+      {% else %}
+      <form method="POST" action="/register" autocomplete="on">
+        <div class="field">
+          <label for="username">Username</label>
+          <input id="username" name="username" value="{{ username or '' }}" placeholder="3–20 letters/numbers"
+                 autocomplete="username" autofocus required>
+          <span class="hint">Used to log in. Letters, numbers, underscores.</span>
+        </div>
+        <div class="field">
+          <label for="display_name">Display name</label>
+          <input id="display_name" name="display_name" value="{{ display_name or '' }}"
+                 placeholder="Shown at the table">
+          <span class="hint">Optional — defaults to your username. Must be unique.</span>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" placeholder="At least 8 characters"
+                 autocomplete="new-password" required minlength="8">
+        </div>
+        <div class="field">
+          <label for="confirm_password">Confirm password</label>
+          <input id="confirm_password" name="confirm_password" type="password" placeholder="Re-enter your password"
+                 autocomplete="new-password" required minlength="8">
+        </div>
+        <button class="btn btn--primary btn--block btn--lg" type="submit">Create account</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

@@ -183,17 +183,30 @@ function updateTurnIndicator() {
 
 function enforceTurnLock(handValue = null, roundEnded = false) {
     const isYourTurn = gameState.playerName === gameState.currentPlayer;
+
+    // Play / Finish only actually work on your turn (the server enforces this too).
     DOM.playBtn.disabled = !isYourTurn || roundEnded;
     DOM.endBtn.disabled = roundEnded ? false : (!isYourTurn || (handValue !== null && handValue > 5));
     DOM.endBtn.textContent = "Finish";
 
-    DOM.deckEl.style.pointerEvents = isYourTurn && !roundEnded ? "auto" : "none";
-    DOM.pileEl.style.pointerEvents = isYourTurn && !roundEnded ? "auto" : "none";
+    // Selection stays interactive even when it is NOT your turn, so you can
+    // pre-select the cards + draw source and be ready to play the instant your
+    // turn starts. Only a round-end freeze disables it. Your hand can't change
+    // during other players' turns, so the pre-selected indices stay valid.
+    const canSelect = !roundEnded;
+    DOM.deckEl.style.pointerEvents = canSelect ? "auto" : "none";
+    DOM.pileEl.style.pointerEvents = canSelect ? "auto" : "none";
 
     document.querySelectorAll(".player-hand .card, .player-hand .joker-card, playing-card")
         .forEach(card => {
-            card.style.pointerEvents = isYourTurn ? "auto" : "none";
+            card.style.pointerEvents = canSelect ? "auto" : "none";
         });
+
+    // Highlight Play when it becomes your turn with a move already queued up.
+    DOM.playBtn.classList.toggle(
+        "ready-pulse",
+        isYourTurn && !roundEnded && gameState.selectedOrder.length > 0 && !!gameState.drawSource
+    );
 }
 
 // === 5. RENDERING FUNCTIONS ===
@@ -321,14 +334,18 @@ function renderRoundSummaryPopup(data) {
     content.innerHTML = data.roundSummaryPopup;
 
     const isGameOver = data.gameOver;
-    const initialIsReady = Array.isArray(data.readyPlayers) && data.readyPlayers.includes(gameState.playerName);
+    // Derive the local player's name from the state payload — gameState.playerName
+    // may not be set yet on the first poll that renders this popup.
+    const localName = (data.players.find(p => Array.isArray(p.hand)) || {}).name || gameState.playerName;
+    const initialIsReady = Array.isArray(data.readyPlayers) && data.readyPlayers.includes(localName);
 
     // === Ready Button ===
     const readyBtn = document.createElement("button");
     readyBtn.classList.add("popup-close");
-    readyBtn.textContent = isGameOver
-        ? (initialIsReady ? "Cancel New Game" : "Ready for New Game")
-        : (initialIsReady ? "Cancel Ready" : "I'm Ready");
+    const readyLabel = (ready) => isGameOver
+        ? (ready ? "Cancel Rematch" : "🔄 Rematch")
+        : (ready ? "Cancel Ready" : "I'm Ready");
+    readyBtn.textContent = readyLabel(initialIsReady);
 
     readyBtn.onclick = async () => {
         const res = await fetch("/ready-next-round", {method: "POST"});
@@ -336,10 +353,8 @@ function renderRoundSummaryPopup(data) {
 
         if (!result.ready || !Array.isArray(result.ready)) return;
 
-        const newReady = result.ready.includes(gameState.playerName);
-        readyBtn.textContent = isGameOver
-            ? (newReady ? "Cancel New Game" : "Ready for New Game")
-            : (newReady ? "Cancel Ready" : "I'm Ready");
+        const newReady = result.ready.includes(localName);
+        readyBtn.textContent = readyLabel(newReady);
 
         if (result.all_ready) {
             document.getElementById("round-popup")?.remove();
@@ -349,15 +364,26 @@ function renderRoundSummaryPopup(data) {
         }
     };
 
-    content.appendChild(readyBtn);
-
     const buttonContainer = document.createElement("div");
     buttonContainer.style.display = "flex";
     buttonContainer.style.justifyContent = "center";
-    buttonContainer.style.gap = "4vw";
+    buttonContainer.style.flexWrap = "wrap";
+    buttonContainer.style.gap = "3vw";
     buttonContainer.style.marginTop = "1vw";
 
     buttonContainer.appendChild(readyBtn);
+
+    // At game over, offer a quick link to the leaderboard (new tab so the popup
+    // and game state stay put).
+    if (isGameOver) {
+        const lbLink = document.createElement("a");
+        lbLink.classList.add("popup-close");
+        lbLink.href = "/leaderboard";
+        lbLink.target = "_blank";
+        lbLink.rel = "noopener";
+        lbLink.textContent = "🏆 Leaderboard";
+        buttonContainer.appendChild(lbLink);
+    }
 
     const quitBtn = document.createElement("button");
     quitBtn.classList.add("popup-close", "end-game");
@@ -439,8 +465,13 @@ async function loadState() {
     state.allPlayers = data.players.map(p => p.name);
     state.hand = current.hand || [];
 
+    // Keep any pre-selection valid against the current hand size.
+    state.selectedOrder = state.selectedOrder.filter(i => i < state.hand.length);
+
     if (roundJustRestarted) {
         state.lastPlayed = [];
+        state.selectedOrder = [];   // fresh deal -> previous indices are meaningless
+        state.drawSource = null;
         clearSessionLog();
         updatePileDisplay();
     }
@@ -570,6 +601,14 @@ function setupEventListeners() {
 function startAutoRefresh() {
     gameState.autoRefreshTimer = setInterval(loadState, 500);
 }
+
+// Subtle "your queued move is ready" pulse on the Play button (self-contained,
+// so the game's style.css is untouched).
+const _readyPulseStyle = document.createElement("style");
+_readyPulseStyle.textContent =
+    "#play-selected.ready-pulse{animation:readyPulse 1s ease-in-out infinite}" +
+    "@keyframes readyPulse{0%,100%{filter:brightness(1);transform:scale(1)}50%{filter:brightness(1.25);transform:scale(1.05)}}";
+document.head.appendChild(_readyPulseStyle);
 
 loadState();
 setupEventListeners();

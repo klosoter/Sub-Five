@@ -1,17 +1,22 @@
 .DS_Store
-__pycache__/game.cpython-39.pyc
-__pycache__/server.cpython-39.pyc
-.DS_Store
 .env
-__pycache__/game.cpython-313.pyc
-.idea/codeStyles/codeStyleConfig.xml
-.idea/inspectionProfiles/profiles_settings.xml
-.idea/inspectionProfiles/Project_Default.xml
-.idea/misc.xml
-.idea/modules.xml
-.idea/Sub-Five.iml
-.idea/vcs.xml
-.DS_Store
-/backend/__pycache__
 *.pyc
+__pycache__/
+
+# Local SQLite accounts DB (durable copy lives on the Fly volume in prod)
+accounts.db
+accounts.db-shm
+accounts.db-wal
+/data/
+
+# Stale pre-rewrite SQLite DB (no longer used)
+sub_five.db
+sub_five.db-shm
+sub_five.db-wal
+
+# IDE
+.idea/
+
+# Rewrite scaffold (not the deploy target)
 /frontend/node_modules
+/backend/__pycache__

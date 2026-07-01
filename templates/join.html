@@ -1,106 +1,111 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Sub- Five Join Room {{ room_code }}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='join.css') }}">
+  <title>Join · {{ room_code }} · Sub-Five</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
   <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icon-192.png') }}">
 </head>
+<body class="menu">
+  <div class="center-page">
+    <div class="panel join-card">
+      <div class="code-label">Room code</div>
+      <div class="big-code">{{ room_code }}</div>
+      <div class="copy-row">
+        <button class="btn btn--ghost" type="button" onclick="copyLink()" id="copyBtn">🔗 Copy invite link</button>
+      </div>
 
-<body class="join-page">
-  <div class="join-container">
-    <h2>Room Code: <span class="room-code">{{ room_code }}</span></h2>
+      <p style="color:var(--text-secondary);margin:0 0 0.25rem">
+        You're in as <strong style="color:var(--text-primary)">{{ player_name }}</strong>
+      </p>
 
-    {% if not player_name %}
-    <form method="POST" action="/join-room" class="join-form">
-      <input type="hidden" name="room" value="{{ room_code }}">
-      <input type="text" name="name" id="nameInput" placeholder="Enter your name" required autofocus>
-      <button type="submit">Join Game</button>
-    </form>
-    {% else %}
-    <p class="player-name">You are: <strong>{{ player_name }}</strong></p>
-    <button onclick="copyLink()">Share Room Link</button>
-    <button id="readyBtn" onclick="toggleReady()">I'm Ready</button>
-    <button id="leave-room-btn" class="end-game">Leave Room</button>
-    {% endif %}
+      <ul class="player-list" id="player-list"></ul>
 
-    <div id="room-status"></div>
+      <div class="join-actions">
+        <button id="readyBtn" class="btn btn--primary" type="button" onclick="toggleReady()">I'm Ready</button>
+        <button id="leaveBtn" class="btn btn--danger" type="button">Leave</button>
+      </div>
+      <p class="helper" id="helper">Waiting for at least 2 players to be ready…</p>
+    </div>
   </div>
+
+  <div class="toast" id="toast"></div>
 
   <script>
     const roomCode = "{{ room_code }}";
-    const playerName = "{{ player_name | safe }}";
+    const playerName = {{ player_name|tojson }};
     let readyState = false;
 
-    const leaveBtn = document.getElementById("leave-room-btn");
-    if (leaveBtn) {
-      leaveBtn.addEventListener("click", async () => {
-        await fetch("/leave", { method: "POST" });
-        window.location.href = "/";
-      });
+    function toast(msg) {
+      const t = document.getElementById("toast");
+      t.textContent = msg; t.classList.add("show");
+      setTimeout(() => t.classList.remove("show"), 1800);
     }
 
     function copyLink() {
       const link = `${location.origin}/join/${roomCode}`;
-      navigator.clipboard.writeText(link);
+      navigator.clipboard.writeText(link).then(() => toast("Invite link copied"));
     }
+
+    document.getElementById("leaveBtn").addEventListener("click", async () => {
+      await fetch("/leave", { method: "POST" });
+      window.location.href = "/";
+    });
 
     async function toggleReady() {
       const res = await fetch(`/toggle-ready/${roomCode}`, { method: "POST" });
+      if (res.status === 401) { window.location.href = "/login"; return; }
+      if (!res.ok) return;
       const data = await res.json();
-      if (data.status === "started") {
-        window.location.href = "/game";
-      } else {
-        readyState = data.ready;
-        updateReadyButton();
-      }
+      if (data.status === "started") { window.location.href = "/game"; return; }
+      readyState = data.ready;
+      updateReadyButton();
     }
 
     function updateReadyButton() {
       const btn = document.getElementById("readyBtn");
-      if (btn) {
-        btn.textContent = readyState ? "Cancel Ready" : "I'm Ready";
-      }
+      btn.textContent = readyState ? "Cancel Ready" : "I'm Ready";
+      btn.classList.toggle("btn--ghost", readyState);
+      btn.classList.toggle("btn--primary", !readyState);
     }
 
     async function pollRoom() {
-      const res = await fetch(`/room-state/${roomCode}`);
-      const data = await res.json();
-      if (data.error) return;
+      let data;
+      try {
+        const res = await fetch(`/room-state/${roomCode}`);
+        if (res.status === 401) { window.location.href = "/login"; return; }
+        if (!res.ok) return;
+        data = await res.json();
+      } catch { return; }
+      if (data.error) { window.location.href = "/"; return; }
+      if (data.started) { window.location.href = "/game"; return; }
 
-      const div = document.getElementById("room-status");
-      const names = data.players;
+      const names = data.players || [];
       const ready = data.ready || {};
+      readyState = !!ready[playerName];
+      updateReadyButton();
 
-      let listHtml = "<h4>Players joined:</h4><ul>";
-      for (const name of names) {
-        const isReady = ready[name];
-        listHtml += `<li>${name}${isReady ? " <span class='ready'>(Ready)</span>" : ""}</li>`;
-      }
-      listHtml += "</ul>";
-      div.innerHTML = listHtml;
+      const list = document.getElementById("player-list");
+      list.innerHTML = names.map(name => {
+        const on = ready[name];
+        const initial = (name[0] || "?").toUpperCase();
+        return `<li>
+          <span class="avatar" style="background:${on ? 'var(--accent)' : 'var(--bg-elevated-2)'};color:${on ? 'var(--text-on-accent)' : 'var(--text-secondary)'}">${initial}</span>
+          <span class="nm">${name}${name === playerName ? ' <span style="color:var(--text-muted)">(you)</span>' : ''}</span>
+          <span class="ready-pill ${on ? 'on' : 'off'}">${on ? '✓ Ready' : 'Not ready'}</span>
+        </li>`;
+      }).join("");
 
-      if (data.started) {
-        window.location.href = "/game";
-      }
+      const readyCount = names.filter(n => ready[n]).length;
+      const helper = document.getElementById("helper");
+      helper.textContent = names.length < 2
+        ? "Waiting for more players to join…"
+        : `${readyCount}/${names.length} ready — game starts when everyone's ready.`;
     }
 
-    setInterval(pollRoom, 1000);
     pollRoom();
+    setInterval(pollRoom, 1000);
   </script>
-
-  {% if clear_input %}
-  <script>
-    const nameInput = document.getElementById("nameInput");
-    if (nameInput) {
-      nameInput.value = "";
-      nameInput.placeholder = "Name already taken. Try another.";
-    }
-    alert("Name already taken. Please choose a different name.");
-  </script>
-  {% endif %}
 </body>
 </html>

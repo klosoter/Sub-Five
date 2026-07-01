@@ -4,25 +4,97 @@ import uuid
 import redis
 import json
 import os
+import time
+import contextlib
 from datetime import timedelta
 
 from game import Game, Card, sort_hand, build_game_over_notice
+
+from flask_login import (
+    LoginManager, login_user, logout_user, login_required, current_user,
+)
+from db import init_db
+from accounts import User, ValidationError, AVATAR_COLORS, leaderboard as get_leaderboard, record_match
 
 from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-key")
-app.config["SESSION_COOKIE_SECURE"] = True
+if not os.environ.get("SECRET_KEY") and os.environ.get("FLASK_ENV") == "production":
+    raise RuntimeError("SECRET_KEY must be set in production (fly secrets set SECRET_KEY=...)")
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("FLASK_ENV") == "production"
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=2)
 
-redis_client = redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+_redis_url = os.environ.get("REDIS_URL")
+if not _redis_url:
+    raise RuntimeError("REDIS_URL must be set (e.g. fly secrets set REDIS_URL=redis://...)")
+redis_client = redis.from_url(_redis_url, decode_responses=True)
+
+# ---------------- Auth (Flask-Login + SQLite) ----------------
+init_db(app)
+
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = "login_page"
+
+# JSON endpoints polled by the game client — they must get a 401 JSON body on an
+# expired session, not an HTML login redirect the fetch() code can't parse.
+API_ENDPOINTS = {
+    "room_list_json", "toggle_ready", "room_state", "leave", "end_room",
+    "state", "handle_play_cards", "end_round", "ready_next_round",
+}
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.get_by_id(user_id)
+
+
+@login_manager.unauthorized_handler
+def handle_unauthorized():
+    if request.endpoint in API_ENDPOINTS:
+        # "Invalid session" matches what the game client already handles.
+        return jsonify({"error": "Invalid session", "redirect": "/login"}), 401
+    return redirect(url_for("login_page", next=request.path))
+
+
+# Accounts whose username (lowercased) is in ADMIN_USERNAMES get the /admin panel.
+# Set e.g. `fly secrets set ADMIN_USERNAMES=you,teammate`.
+ADMIN_USERNAMES = {u.strip().lower() for u in os.environ.get("ADMIN_USERNAMES", "").split(",") if u.strip()}
+
+
+def _is_admin():
+    return current_user.is_authenticated and (current_user.username or "").lower() in ADMIN_USERNAMES
+
+
+# ---- login brute-force protection (Redis failure counters) ----
+LOGIN_MAX_ATTEMPTS = 10
+LOGIN_WINDOW_SECONDS = 300  # sliding 5-minute window per IP and per username
+
+
+def _client_ip():
+    # Honour the proxy chain (Fly/Cloudflare) but fall back to the socket peer.
+    xff = request.headers.get("X-Forwarded-For", "")
+    return xff.split(",")[0].strip() if xff else (request.remote_addr or "unknown")
+
+
+def _rl_over(*keys):
+    return any(int(redis_client.get(k) or 0) >= LOGIN_MAX_ATTEMPTS for k in keys)
+
+
+def _rl_hit(*keys):
+    for k in keys:
+        n = redis_client.incr(k)
+        if n == 1:
+            redis_client.expire(k, LOGIN_WINDOW_SECONDS)
 
 # Constants
 ROOM_PREFIX = "room:"
 ROOM_TTL_SECONDS = 3600
+MAX_PLAYERS = 4  # the table UI seats at most 4 and the 54-card deck deals for <=4
 
 # ---------------- Utility functions ----------------
 
@@ -44,7 +116,10 @@ def build_game_over_notice(winners):
     <div class="mini-popup-content">
     <h2>🏆 Game Over</h2>
     <p>{winner_text}</p>
-    <button class="popup-close" id="game-over-ok">OK</button>
+    <div style="display:flex;gap:1vw;justify-content:center;flex-wrap:wrap">
+      <button class="popup-close" id="game-over-ok">OK</button>
+      <a class="popup-close" href="/leaderboard" target="_blank" rel="noopener">🏆 Leaderboard</a>
+    </div>
     </div>
     """
 
@@ -112,6 +187,89 @@ def store_game_in_room(room, game):
     room["players"] = [p.name for p in game.players]
 
 
+def _remove_player_from_game(game, name):
+    """Remove a player who left mid-game and fix the turn pointer so the rest
+    keep playing. Only touches the seat list + current-player index — the rules,
+    scoring, validation and turn rotation in game.py are unchanged. Returns the
+    number of players still seated."""
+    idx = next((i for i, p in enumerate(game.players) if p.name == name), None)
+    if idx is None:
+        return len(game.players)
+    game.players.pop(idx)
+    game.ready_players.discard(name)
+    game.seen_game_over_notice.discard(name)
+    if game.players:
+        # Keep current_player_index pointing at the same player; if the leaver
+        # was the one on turn (or sat before them), it now lands on the next.
+        if idx < game.current_player_index:
+            game.current_player_index -= 1
+        game.current_player_index %= len(game.players)
+    return len(game.players)
+
+
+def _do_leave(code, name):
+    """Remove `name` from room `code` under the room lock. The rest keep playing;
+    the room is deleted if fewer than 2 players remain. Shared by /leave and
+    account deletion so a departing player never lingers in a game."""
+    if not code or not name:
+        return
+    with room_lock(code):
+        room = load_room(code)
+        if not room or name not in room.get("players", []):
+            return
+        room["players"].remove(name)
+        room["ready"].pop(name, None)
+        room.get("user_ids", {}).pop(name, None)
+        if not room["players"]:
+            delete_room(code)
+            redis_client.delete(_recorded_key(code))
+        elif room.get("started") and room.get("game"):
+            g = room["game"]
+            if isinstance(g, dict):
+                g = Game.deserialize(g)
+            if _remove_player_from_game(g, name) < 2:
+                delete_room(code)
+                redis_client.delete(_recorded_key(code))
+            else:
+                store_game_in_room(room, g)
+                save_room(code, room)
+        else:
+            save_room(code, room)
+
+
+def _recorded_key(code):
+    return f"recorded:{code}"
+
+
+def _record_finished_match(code, room, game):
+    """Persist a finished match to the accounts DB, exactly once per game-over.
+
+    The once-guard is a Redis SET NX marker (not a field inside the room JSON
+    blob), so concurrent end-round requests across workers can't double-record.
+    The marker is cleared when a fresh game starts (toggle_ready) or a rematch
+    begins (ready_next_round).
+    """
+    if not redis_client.set(_recorded_key(code), "1", nx=True, ex=ROOM_TTL_SECONDS):
+        return  # this match was already recorded
+    winner_names = {name for name, _ in (game.winners or [])}
+    user_ids = room.get("user_ids", {})
+    players_data = [
+        {
+            "user_id": user_ids.get(p.name),
+            "display_name": p.name,
+            "final_score": game.scores.get(p.name, 0),
+            "is_winner": p.name in winner_names,
+        }
+        for p in game.players
+    ]
+    try:
+        record_match(code, players_data)
+    except Exception as e:
+        # Release the marker so a retry can record rather than losing the match.
+        redis_client.delete(_recorded_key(code))
+        app.logger.warning("record_match failed: %s", e)
+
+
 @app.after_request
 def add_no_cache_headers(response):
     """Prevent caching of static assets like CSS/JS during development."""
@@ -167,115 +325,343 @@ def list_rooms():
             rooms.append((code, data))
     return rooms
 
-# ---------------- Routes ----------------
+
+@contextlib.contextmanager
+def room_lock(code, timeout=5, retries=100, delay=0.03):
+    """Best-effort per-room mutex around read-modify-write of the room blob so
+    concurrent joins / ready-toggles / leaves don't clobber each other. Falls
+    through after ~3s of contention (rare for these tiny critical sections)
+    rather than erroring the request."""
+    lock_key = f"lock:{code}"
+    token = uuid.uuid4().hex
+    have = False
+    for _ in range(retries):
+        if redis_client.set(lock_key, token, nx=True, ex=timeout):
+            have = True
+            break
+        time.sleep(delay)
+    if not have:
+        app.logger.warning("room_lock: proceeding without lock for %s", code)
+    try:
+        yield
+    finally:
+        if have:
+            try:
+                if redis_client.get(lock_key) == token:
+                    redis_client.delete(lock_key)
+            except Exception:
+                pass
+
+# ---------------- Auth routes ----------------
 
 
-@app.route("/")
-def home():
-    return render_template("home.html", room_list=[
+def _safe_next(nxt):
+    """Only allow same-site relative redirect targets (blocks //evil.com etc.)."""
+    if nxt and nxt.startswith("/") and not nxt.startswith("//") and not nxt.startswith("/\\"):
+        return nxt
+    return "/"
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login_page():
+    if current_user.is_authenticated:
+        return redirect("/")
+    if request.method == "POST":
+        nxt = request.form.get("next") or request.args.get("next", "")
+        uname = (request.form.get("username") or "").strip().lower()
+        ip_key = f"rl:login:ip:{_client_ip()}"
+        user_key = f"rl:login:user:{uname}"
+        if _rl_over(ip_key, user_key):
+            return render_template(
+                "auth.html", mode="login",
+                error="Too many attempts — please wait a few minutes and try again.",
+                username=request.form.get("username", ""), next=nxt,
+            ), 429
+        user = User.authenticate(request.form.get("username"), request.form.get("password"))
+        if not user:
+            _rl_hit(ip_key, user_key)  # count the failed attempt
+            return render_template(
+                "auth.html", mode="login", error="Invalid username or password.",
+                username=request.form.get("username", ""), next=nxt,
+            ), 401
+        redis_client.delete(user_key)  # clear the per-user counter on success
+        session.clear()  # rotate: don't carry a pre-auth session across login
+        login_user(user, remember=True)
+        user.touch()
+        session["player_name"] = user.display_name
+        return redirect(_safe_next(nxt))
+    return render_template("auth.html", mode="login", next=request.args.get("next", ""))
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register_page():
+    if current_user.is_authenticated:
+        return redirect("/")
+    if request.method == "POST":
+        pw = request.form.get("password", "")
+        confirm = request.form.get("confirm_password")
+        try:
+            # The register form always sends confirm_password; validate it when
+            # present (non-form callers that omit it are unaffected).
+            if confirm is not None and pw != confirm:
+                raise ValidationError("Passwords do not match.")
+            user = User.register(
+                request.form.get("username", ""),
+                pw,
+                request.form.get("display_name", ""),
+            )
+        except ValidationError as e:
+            return render_template(
+                "auth.html", mode="register", error=str(e),
+                username=request.form.get("username", ""),
+                display_name=request.form.get("display_name", ""),
+            ), 400
+        session.clear()  # rotate session on privilege change
+        login_user(user, remember=True)
+        session["player_name"] = user.display_name
+        return redirect("/")
+    return render_template("auth.html", mode="register")
+
+
+@app.route("/logout", methods=["POST", "GET"])
+def logout():
+    # Drop our own keys first; logout_user() then clears the login session AND
+    # queues the remember-me cookie for deletion. Do NOT session.clear() after
+    # it — that would wipe the remember-clear flag and re-login on next request.
+    session.pop("room", None)
+    session.pop("player_name", None)
+    logout_user()
+    return redirect("/login")
+
+
+@app.route("/leaderboard")
+@login_required
+def leaderboard_page():
+    return render_template("leaderboard.html", user=current_user, rows=get_leaderboard(limit=50))
+
+
+@app.route("/profile")
+@login_required
+def profile_page():
+    return render_template(
+        "profile.html", user=current_user,
+        stats=current_user.stats(), history=current_user.match_history(limit=15),
+    )
+
+
+@app.route("/account", methods=["GET", "POST"])
+@login_required
+def account_page():
+    message = error = None
+    if request.method == "POST":
+        action = request.form.get("action")
+        try:
+            if action == "name":
+                current_user.change_display_name(request.form.get("display_name", ""))
+                session["player_name"] = current_user.display_name
+                message = "Display name updated."
+            elif action == "password":
+                new = request.form.get("new_password", "")
+                if new != request.form.get("confirm_password", ""):
+                    raise ValidationError("New passwords do not match.")
+                current_user.change_password(request.form.get("current_password", ""), new)
+                message = "Password updated."
+            elif action == "color":
+                current_user.change_avatar_color(request.form.get("avatar_color", ""))
+                message = "Avatar colour updated."
+            else:
+                raise ValidationError("Unknown action.")
+        except ValidationError as e:
+            error = str(e)
+    return render_template(
+        "account.html", user=current_user, is_admin=_is_admin(),
+        avatar_colors=AVATAR_COLORS, message=message, error=error,
+    ), (400 if error else 200)
+
+
+@app.route("/account/delete", methods=["POST"])
+@login_required
+def account_delete():
+    # Require the password to confirm this destructive action.
+    if not User.authenticate(current_user.username, request.form.get("password", "")):
+        return render_template(
+            "account.html", user=current_user, is_admin=_is_admin(),
+            avatar_colors=AVATAR_COLORS,
+            error="Password incorrect — account not deleted.",
+        ), 400
+    # Exit any active game first so the deleted player doesn't linger in a room.
+    _do_leave(session.get("room"), session.get("player_name"))
+    uid = current_user.id
+    session.pop("room", None)
+    session.pop("player_name", None)
+    logout_user()
+    User.delete_user(uid)
+    return redirect("/login")
+
+
+# ---------------- Admin ----------------
+
+
+@app.route("/admin")
+@login_required
+def admin_page():
+    if not _is_admin():
+        return redirect("/")
+    rooms = [
         {
             "code": code,
             "players": extract_player_names(room.get("players", [])),
-            "started": room.get("started", False)
+            "started": room.get("started", False),
         }
         for code, room in list_rooms()
-    ])
+    ]
+    return render_template("admin.html", user=current_user, rooms=rooms, users=User.all_users())
+
+
+@app.route("/admin/delete-room/<code>", methods=["POST"])
+@login_required
+def admin_delete_room(code):
+    if not _is_admin():
+        return redirect("/")
+    with room_lock(code):
+        delete_room(code)
+        redis_client.delete(_recorded_key(code))
+    return redirect("/admin")
+
+
+@app.route("/admin/clear-rooms", methods=["POST"])
+@login_required
+def admin_clear_rooms():
+    if not _is_admin():
+        return redirect("/")
+    for code, _room in list_rooms():
+        with room_lock(code):
+            delete_room(code)
+            redis_client.delete(_recorded_key(code))
+    return redirect("/admin")
+
+
+@app.route("/admin/delete-user/<user_id>", methods=["POST"])
+@login_required
+def admin_delete_user(user_id):
+    if not _is_admin():
+        return redirect("/")
+    if user_id != current_user.id:  # can't delete yourself from the admin panel
+        User.delete_user(user_id)
+    return redirect("/admin")
+
+
+# ---------------- Lobby routes ----------------
+
+
+@app.route("/")
+@login_required
+def home():
+    rooms = []
+    for code, room in list_rooms():
+        if not room.get("players"):
+            continue  # hide empty rooms (creator not seated yet / abandoned)
+        rooms.append({
+            "code": code,
+            "players": extract_player_names(room.get("players", [])),
+            "started": room.get("started", False),
+            "is_host": room.get("host") == current_user.id,
+        })
+    return render_template(
+        "home.html", room_list=rooms, user=current_user, is_admin=_is_admin(),
+        stats=current_user.stats(), leaders=get_leaderboard(limit=10),
+    )
 
 
 @app.route("/room-list")
+@login_required
 def room_list_json():
     return jsonify([
         {
             "code": code,
             "players": extract_player_names(room.get("players", [])),
-            "started": room.get("started", False)
+            "started": room.get("started", False),
+            "is_host": room.get("host") == current_user.id,
         }
         for code, room in list_rooms()
+        if room.get("players")
     ])
 
 
 @app.route("/create")
+@login_required
 def create_room():
-    """Create a new room and redirect to join page."""
-    session.clear()
+    """Create a new room and redirect to its join page."""
+    session.pop("room", None)
+    session.pop("player_name", None)
     code = str(uuid.uuid4())[:6].upper()
     room_data = {
         "players": [],
         "ready": {},
         "game": None,
-        "started": False
+        "started": False,
+        "host": current_user.id,
+        "user_ids": {},
     }
     save_room(code, room_data)
     return redirect(url_for("join_room", code=code))
 
 
 @app.route("/join/<code>")
+@login_required
 def join_room(code):
-    room = load_room(code)
-    if not room:
-        return redirect("/")
-
-    name = session.get("player_name")
-
-    # If session has a player name, but they're not in the room → clear it
-    if name and name not in room.get("players", []):
-        session.pop("player_name", None)
-
-    return render_template("join.html", room_code=code, player_name=session.get("player_name"))
-
-
-@app.route("/join-room", methods=["POST"])
-def post_join_room():
-    code = request.form.get("room", "").upper()
-    name = request.form.get("name", "").strip()
-    room = load_room(code)
-
-    if not room:
-        return redirect("/")
-
-    if not name or name in room["players"]:
-        return render_template("join.html", room_code=code, player_name=None, clear_input=True)
+    # Identity comes from the authenticated account, never from client input.
+    name = current_user.display_name
+    with room_lock(code):
+        room = load_room(code)
+        if not room:
+            return redirect("/")
+        if name not in room.get("players", []):
+            if room.get("started"):
+                return redirect("/")  # cannot join a game already in progress
+            if len(room.get("players", [])) >= MAX_PLAYERS:
+                return redirect("/")  # room is full
+            room.setdefault("players", []).append(name)
+            room.setdefault("ready", {})[name] = False
+            room.setdefault("user_ids", {})[name] = current_user.id
+            save_room(code, room)
 
     session["room"] = code
     session["player_name"] = name
-    room["players"].append(name)
-    room["ready"][name] = False
-    save_room(code, room)
-
-    return redirect(url_for("join_room", code=code))
+    return render_template("join.html", room_code=code, player_name=name)
 
 
 @app.route("/toggle-ready/<code>", methods=["POST"])
+@login_required
 def toggle_ready(code):
     """Toggle player ready state; if all ready, start game."""
-    room = load_room(code)
     name = session.get("player_name")
+    with room_lock(code):
+        room = load_room(code)
+        if not room or not name or name not in room["players"]:
+            return jsonify({"error": "Invalid session"})
 
-    if not room or not name or name not in room["players"]:
-        return jsonify({"error": "Invalid session"})
+        # Toggle readiness
+        room["ready"][name] = not room["ready"].get(name, False)
 
-    # Toggle readiness
-    room["ready"][name] = not room["ready"].get(name, False)
+        # Start game if everyone is ready (exactly one request wins this inside
+        # the lock, so two concurrent toggles can't build two games).
+        all_ready = all(room["ready"].values()) and len(room["players"]) >= 2
+        if all_ready and not room.get("started"):
+            player_names = [p["name"] if isinstance(p, dict) else p for p in room["players"]]
+            game = Game(player_names)
+            store_game_in_room(room, game)
+            room["started"] = True
+            redis_client.delete(_recorded_key(code))  # fresh match can be recorded
+            save_room(code, room)
+            return jsonify({"status": "started"})
 
-    # Start game if everyone is ready
-    all_ready = all(room["ready"].values()) and len(room["players"]) >= 2
-    if all_ready and not room.get("started"):
-        player_names = [p["name"] if isinstance(
-            p, dict) else p for p in room["players"]]
-        game = Game(player_names)
-
-        store_game_in_room(room, game)
-
-        room["started"] = True
         save_room(code, room)
-        return jsonify({"status": "started"})
-
-    # Save updated readiness
-    save_room(code, room)
-    return jsonify({"ready": room["ready"][name]})
+        return jsonify({"ready": room["ready"][name]})
 
 
 @app.route("/room-state/<code>")
+@login_required
 def room_state(code):
     """Return room state for polling (players + readiness)."""
     room = load_room(code)
@@ -293,39 +679,37 @@ def room_state(code):
 
 
 @app.route("/delete-room/<code>", methods=["POST"])
+@login_required
 def delete_room_route(code):
-    """Delete room and redirect to lobby."""
-    delete_room(code)
+    """Delete a room and redirect to the lobby.
+
+    Used both by the lobby Delete button and the in-game Quit (script.js), so the
+    redirect contract is preserved. Only the host may delete from the lobby.
+    """
+    with room_lock(code):
+        room = load_room(code)
+        if room:
+            is_host = room.get("host") == current_user.id
+            is_member = current_user.display_name in room.get("players", [])
+            if not (is_host or is_member):
+                return redirect("/")  # only the host or a current member may delete
+        delete_room(code)
+        redis_client.delete(_recorded_key(code))
     return redirect("/")
 
 
 @app.route("/leave", methods=["POST"])
+@login_required
 def leave():
-    code = session.get("room")
-    name = session.get("player_name")
-
-    if not code or not name:
-        session.clear()
-        return jsonify({"redirect": "/"})
-
-    room = load_room(code)
-    if room and name in room.get("players", []):
-        room["players"].remove(name)
-        room["ready"].pop(name, None)
-
-        # Optional: Clear game state if active
-        if not room["players"]:
-            delete_room(code)
-        else:
-            room["game"] = None if room.get("started") else room.get("game")
-            room["started"] = False
-            save_room(code, room)
-
-    session.clear()
+    _do_leave(session.get("room"), session.get("player_name"))
+    # Leave the room but keep the account logged in.
+    session.pop("room", None)
+    session.pop("player_name", None)
     return jsonify({"redirect": "/"})
 
 
 @app.route("/end-room", methods=["POST"])
+@login_required
 def end_room():
     code = session.get("room")
     player_name = session.get("player_name")
@@ -333,22 +717,20 @@ def end_room():
     if not code or not player_name:
         return jsonify({"error": "Not in a room"}), 400
 
-    room = load_room(code)
-    if not room:
-        return jsonify({"error": "Room not found"}), 400
+    with room_lock(code):
+        room = load_room(code)
+        if not room:
+            return jsonify({"error": "Room not found"}), 400
+        delete_room(code)
+        redis_client.delete(_recorded_key(code))
 
-    # Optional: Mark room as terminated for any future polling logic
-    room["terminated"] = True
-    save_room(code, room)
-
-    # Actually remove the room from Redis
-    delete_room(code)
-    session.clear()
-
+    session.pop("room", None)
+    session.pop("player_name", None)
     return jsonify({"status": "Room closed", "redirect": "/"})
 
 
 @app.route("/game")
+@login_required
 def game():
     if "player_name" not in session or "room" not in session:
         return redirect("/")
@@ -356,77 +738,95 @@ def game():
 
 
 @app.route("/state")
+@login_required
 def state():
     code = session.get("room")
     player_name = session.get("player_name")
-    room = load_room(code)
-
-    if not room or not code or not player_name or player_name not in room["players"]:
-        session.clear()
+    if not code or not player_name:
         return jsonify({"error": "Invalid session"}), 400
 
-    game = room.get("game")
-    if not game:
-        return jsonify({"error": "Game not started"}), 400
+    with room_lock(code):
+        room = load_room(code)
 
-    if isinstance(game, dict):
-        game = Game.deserialize(game)
-        room["game"] = game
+        if not room or player_name not in room.get("players", []):
+            # Drop only room scope — never the login session (polled every 500ms).
+            session.pop("room", None)
+            session.pop("player_name", None)
+            return jsonify({"error": "Invalid session"}), 400
 
-    # Show game-over popup once, then clear
-    # Only send popup if player hasn't seen it yet
+        game = room.get("game")
+        if not game:
+            return jsonify({"error": "Game not started"}), 400
 
-    gameOver = game.game_over
-    
-    if game.game_over_notice and player_name not in game.seen_game_over_notice:
-        gameOverNotice = game.game_over_notice
-        game.seen_game_over_notice.add(player_name)
-    else:
-        gameOverNotice = None
-    
-    if set(p.name for p in game.players) == game.seen_game_over_notice:
-        game.game_over_notice = None
-        game.seen_game_over_notice = set()
- 
-    # If all players have seen it, clear it
-    if set(p.name for p in game.players) == game.seen_game_over_notice:
-        game.game_over_notice = None
-        game.seen_game_over_notice = set()
+        if isinstance(game, dict):
+            game = Game.deserialize(game)
+            room["game"] = game
 
+        changed = False
 
-    # Start next round if all players ready
-    if set(p.name for p in game.players) == game.ready_players:
-        game.start_next_round()
-        game.ready_players = set()
-        game.round_ended = False
+        # Show the game-over popup once per player, then clear it.
+        if game.game_over_notice and player_name not in game.seen_game_over_notice:
+            gameOverNotice = game.game_over_notice
+            game.seen_game_over_notice.add(player_name)
+            changed = True
+        else:
+            gameOverNotice = None
 
+        # Once everyone still seated has seen it, clear the notice.
+        if game.game_over_notice is not None and set(p.name for p in game.players) == game.seen_game_over_notice:
+            game.game_over_notice = None
+            game.seen_game_over_notice = set()
+            changed = True
+
+        # Start next round once everyone still seated has readied. Normally the last
+        # /ready-next-round does this in one locked write; this fallback also covers
+        # a mid-game leave that completes the remaining players' ready set. Uses
+        # reset_for_next_round (the method that exists on game.py) and mirrors the
+        # /ready-next-round game-over handling.
+        if game.round_ended and game.players and set(p.name for p in game.players) == game.ready_players:
+            if game.game_over:
+                game.reset_scores()
+                redis_client.delete(_recorded_key(code))
+            game.reset_for_next_round()
+            game.ready_players = set()
+            game.round_ended = False
+            game.last_action = None
+            changed = True
+
+        # Only rewrite the room blob when this poll actually changed state; the
+        # common read-only poll just refreshes the TTL. This keeps the lock hold
+        # tiny even though /state is polled ~2x/sec per player.
+        if changed:
+            room["game"] = game.serialize()
+            save_room(code, room)
+        else:
+            redis_client.expire(room_key(code), ROOM_TTL_SECONDS)
+
+    # Build the (larger) JSON response OUTSIDE the lock — `game` is this request's
+    # own object, so nothing else mutates it once the lock is released.
     action = getattr(game, "last_action", None)
     if action:
         draw_source = action["draw_source"]
         drew_card = (
-            str(action["drawn_card"]
-                ) if draw_source == "pile" or action["player"] == player_name else None
+            str(action["drawn_card"])
+            if draw_source == "pile" or action["player"] == player_name else None
         )
         last_action = {
             "player": action["player"],
             "played": action["played"],
             "drawn_card": drew_card,
-            "draw_source": draw_source
+            "draw_source": draw_source,
         }
     else:
         last_action = None
 
-    room["game"] = game.serialize()
-    save_room(code, room)
-    
-    gameOver = game.game_over
     return jsonify({
         "players": [
             {
                 "name": p.name,
                 "hand": [str(c) for c in sort_hand(p.hand)] if p.name == player_name else len(p.hand),
                 "hand_value": p.hand_value() if p.name == player_name else None,
-                "score": game.scores.get(p.name, 0)
+                "score": game.scores.get(p.name, 0),
             }
             for p in game.players
         ],
@@ -438,150 +838,181 @@ def state():
         "roundEnded": game.round_ended,
         "readyPlayers": list(game.ready_players),
         "roundSummaryPopup": getattr(game, "round_summary_html", ""),
-        "gameOver": gameOver,
+        "gameOver": game.game_over,
         "gameOverNotice": gameOverNotice,
     })
 
 
 @app.route("/play", methods=["POST"])
+@login_required
 def handle_play_cards():
     code = session.get("room")
     player_name = session.get("player_name")
-    room = load_room(code)
+    if not code or not player_name:
+        return jsonify({"error": "Invalid session", "redirect": "/"}), 400
 
-    if not room or not room.get("game"):
-        return redirect("/")
-
-    game = room["game"]
-    if isinstance(game, dict):
-        game = Game.deserialize(game)
-    room["game"] = game  # safe temporarily
-
-    data = request.json
+    data = request.json or {}
     cards_raw = data.get("cards", [])
     draw = data.get("draw")
 
-    cards = [
-        Card("JOKER", s[-1]) if s.startswith("JOKER") else Card(s[:-1], s[-1])
-        for s in cards_raw
-    ]
-
-
-
+    # Build Card objects defensively so a malformed payload is a clean 400.
+    if not isinstance(cards_raw, list):
+        return jsonify({"error": "Invalid cards."}), 400
     try:
-        player = next(p for p in game.players if p.name == player_name)
-        played, drawn = game.play_cards(player, cards, draw)
-        if not (game.is_valid_series(cards) or game.is_valid_set(cards)):
-            print(cards, game.is_valid_series(cards))
-            return jsonify({"error": "Invalid move."}), 400
+        cards = [
+            Card("JOKER", s[-1]) if isinstance(s, str) and s.startswith("JOKER")
+            else Card(s[:-1], s[-1])
+            for s in cards_raw
+        ]
+    except Exception:
+        return jsonify({"error": "Invalid cards."}), 400
 
-        game.next_turn()
-        game.last_action = {
-            "player": player.name,
-            "played": [str(c) for c in played],
-            "drawn_card": str(drawn),
-            "draw_source": draw
-        }
-        store_game_in_room(room, game)
-        save_room(code, room)
-        return jsonify({"status": "OK"})
+    with room_lock(code):
+        room = load_room(code)
+        if not room or not room.get("game") or player_name not in room.get("players", []):
+            return jsonify({"error": "Invalid session", "redirect": "/"}), 400
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        game = room["game"]
+        if isinstance(game, dict):
+            game = Game.deserialize(game)
+        room["game"] = game
+
+        # Server-side turn enforcement — the client's enforceTurnLock() is advisory
+        # only, so a member could otherwise POST /play out of turn.
+        if game.current_player().name != player_name:
+            return jsonify({"error": "It's not your turn."}), 400
+
+        try:
+            player = next(p for p in game.players if p.name == player_name)
+            played, drawn = game.play_cards(player, cards, draw)
+            if not (game.is_valid_series(cards) or game.is_valid_set(cards)):
+                return jsonify({"error": "Invalid move."}), 400
+
+            game.next_turn()
+            game.last_action = {
+                "player": player.name,
+                "played": [str(c) for c in played],
+                "drawn_card": str(drawn),
+                "draw_source": draw,
+            }
+            store_game_in_room(room, game)
+            save_room(code, room)
+            return jsonify({"status": "OK"})
+
+        except Exception as e:
+            return jsonify({"error": str(e)}), 400
 
 
 @app.route("/end-round", methods=["POST"])
+@login_required
 def end_round():
     code = session.get("room")
     player = session.get("player_name")
-    room = load_room(code)
+    if not code or not player:
+        return jsonify({"error": "Invalid session", "redirect": "/"}), 400
 
-    if not room or not room.get("game"):
-        return redirect("/")
+    with room_lock(code):
+        room = load_room(code)
+        if not room or not room.get("game") or player not in room.get("players", []):
+            return jsonify({"error": "Invalid session", "redirect": "/"}), 400
 
-    try:
         game = room["game"]
         if isinstance(game, dict):
             game = Game.deserialize(game)
         room["game"] = game  # keep deserialized for now
 
-        hands, hand_values, scores, penalty_applied = game.end_game(
-            player)
-        game.round_ended = True
-        game.ready_players = set()
+        # A round may only be ended once — blocks a re-submitted /end-round from
+        # re-scoring or double-recording an already-finished game.
+        if game.round_ended:
+            return jsonify({"error": "Round already ended."}), 400
 
-        if game.is_game_over():
-            game.game_over = True
-            game.winners = game.determine_winners()
-            game.game_over_notice = build_game_over_notice(game.winners)
-        else:
-            game.game_over_notice = None
+        # Ending the round is a your-turn action (mirrors the Finish button gate).
+        if game.current_player().name != player:
+            return jsonify({"error": "It's not your turn."}), 400
 
-        game.round_summary_html = build_round_summary_popup(
-            round_ender=player,
-            hands={p.name: [str(c) for c in sort_hand(p.hand)]
-                   for p in game.players},
-            hand_values=hand_values,
-            scores=scores,
-            penalty_applied=penalty_applied,
-        )
+        # Enforce the ≤5 Finish rule server-side too, so a hacked/desynced client
+        # can't end with a big hand. This reads the engine's own hand_value() —
+        # game.py's rules are unchanged, and a legitimate client (whose Finish
+        # button is disabled above 5) never trips this.
+        if game.current_player().hand_value() > 5:
+            return jsonify({"error": "You can only Finish with 5 points or fewer."}), 400
 
-        room["players"] = [p.name for p in game.players]
-        room["game"] = game.serialize()
-        save_room(code, room)
+        try:
+            hands, hand_values, scores, penalty_applied = game.end_game(player)
+            game.round_ended = True
+            game.ready_players = set()
 
-        print("end round")
+            if game.is_game_over():
+                game.game_over = True
+                game.winners = game.determine_winners()
+                game.game_over_notice = build_game_over_notice(game.winners)
+                _record_finished_match(code, room, game)
+            else:
+                game.game_over_notice = None
 
-        return '', 204
+            game.round_summary_html = build_round_summary_popup(
+                round_ender=player,
+                hands={p.name: [str(c) for c in sort_hand(p.hand)]
+                       for p in game.players},
+                hand_values=hand_values,
+                scores=scores,
+                penalty_applied=penalty_applied,
+            )
 
-    except Exception as e:
-        print("error", e)
-        return jsonify({"error": str(e)}), 400
+            room["players"] = [p.name for p in game.players]
+            room["game"] = game.serialize()
+            save_room(code, room)
+            return '', 204
+
+        except Exception as e:
+            return jsonify({"error": str(e)}), 400
 
 
 @app.route("/ready-next-round", methods=["POST"])
+@login_required
 def ready_next_round():
     code = session.get("room")
     player = session.get("player_name")
-
     if not code or not player:
         return jsonify({"error": "Missing session"}), 400
 
-    room = load_room(code)
-    if not room or "game" not in room:
-        return jsonify({"error": "Room/game not found"}), 400
+    with room_lock(code):
+        room = load_room(code)
+        if not room or not room.get("game") or player not in room.get("players", []):
+            return jsonify({"error": "Room/game not found"}), 400
 
-    game = room["game"]
-    if isinstance(game, dict):
-        game = Game.deserialize(game)
-    room["game"] = game  # allow mutation
+        game = room["game"]
+        if isinstance(game, dict):
+            game = Game.deserialize(game)
+        room["game"] = game  # allow mutation
 
-    if not game.round_ended:
-        return jsonify({"error": "Round not ended"}), 400
+        if not game.round_ended:
+            return jsonify({"error": "Round not ended"}), 400
 
-    if player in game.ready_players:
-        game.ready_players.remove(player)
-    else:
-        game.ready_players.add(player)
+        if player in game.ready_players:
+            game.ready_players.remove(player)
+        else:
+            game.ready_players.add(player)
 
-    all_ready = set(p.name for p in game.players) == game.ready_players
+        all_ready = set(p.name for p in game.players) == game.ready_players
 
-    if all_ready and game.round_ended:
-        if game.game_over:
-            game.reset_scores()
-        game.reset_for_next_round()
-        game.round_ended = False
-        game.last_action = None
-    store_game_in_room(room, game)
-    save_room(code, room)
+        if all_ready and game.round_ended:
+            if game.game_over:
+                game.reset_scores()
+                redis_client.delete(_recorded_key(code))  # rematch can be recorded
+            game.reset_for_next_round()
+            game.round_ended = False
+            game.last_action = None
+        store_game_in_room(room, game)
+        save_room(code, room)
 
-    return jsonify({
-        "ready": list(game.ready_players),
-        "all_ready": all_ready,
-        "pileTop": str(game.play_pile),
-        "scores": game.scores,
-        "gameOver": game.game_over,
-    })
+        return jsonify({
+            "ready": list(game.ready_players),
+            "all_ready": all_ready,
+            "pileTop": str(game.play_pile),
+            "scores": game.scores,
+            "gameOver": game.game_over,
+        })
 
 
 if __name__ == "__main__":

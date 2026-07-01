@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ user.display_name }} · Sub-Five</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icon-192.png') }}">
+</head>
+<body class="menu">
+  <div class="page">
+    <header class="topbar">
+      <a class="brand" href="/"><span class="pip">♠</span> Sub-Five</a>
+      <div class="topbar-actions">
+        <a class="btn btn--ghost" href="/">← Lobby</a>
+        <a class="btn btn--ghost" href="/leaderboard">🏆 Leaderboard</a>
+      </div>
+    </header>
+
+    <div class="panel" style="display:flex;align-items:center;gap:1rem;margin-bottom:1.5rem">
+      <span class="avatar" style="width:3.5rem;height:3.5rem;font-size:1.4rem;background:{{ user.avatar_color }}">{{ user.display_name[0]|upper }}</span>
+      <div>
+        <div style="font-size:1.4rem;font-weight:800">{{ user.display_name }}</div>
+        <div style="color:var(--text-muted)">@{{ user.username }}</div>
+      </div>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat"><div class="num accent">{{ stats.games_played }}</div><div class="lbl">Games</div></div>
+      <div class="stat"><div class="num gold">{{ stats.games_won }}</div><div class="lbl">Wins</div></div>
+      <div class="stat"><div class="num">{{ stats.win_rate }}%</div><div class="lbl">Win rate</div></div>
+      <div class="stat"><div class="num">{{ stats.best_score if stats.best_score is not none else '—' }}</div><div class="lbl">Best score</div></div>
+    </div>
+
+    <h2 class="section-title">Recent matches</h2>
+    <div class="panel" style="padding:0.5rem">
+      {% if history %}
+      <table class="data-table">
+        <thead><tr><th>Result</th><th class="num">Your score</th><th>Opponents</th><th>Winner</th><th class="num">When</th></tr></thead>
+        <tbody>
+          {% for m in history %}
+          <tr>
+            <td>{% if m.is_winner %}<span class="status-pill playing">🏆 Won</span>{% else %}<span class="status-pill" style="color:var(--text-muted);border:1px solid var(--border-default)">Lost</span>{% endif %}</td>
+            <td class="num">{{ m.final_score }}</td>
+            <td style="color:var(--text-secondary)">{{ m.opponents or '—' }}</td>
+            <td style="color:var(--gold)">{{ m.winner or '—' }}</td>
+            <td class="num" style="color:var(--text-muted)">{{ m.ended_at }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty" style="border:none">No matches yet. <a href="/" style="color:var(--accent)">Play a game →</a></div>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Leaderboard · Sub-Five</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icon-192.png') }}">
+</head>
+<body class="menu">
+  <div class="page">
+    <header class="topbar">
+      <a class="brand" href="/"><span class="pip">♠</span> Sub-Five</a>
+      <div class="topbar-actions">
+        <a class="btn btn--ghost" href="/">← Lobby</a>
+        <a class="btn btn--ghost" href="/profile">My profile</a>
+      </div>
+    </header>
+
+    <div class="hero" style="padding-bottom:1rem">
+      <h1>🏆 Leaderboard</h1>
+      <p>Ranked by total wins, then win rate. Lowest total score breaks ties.</p>
+    </div>
+
+    <div class="panel" style="padding:0.5rem">
+      {% if rows %}
+      <table class="data-table">
+        <thead>
+          <tr><th class="rank">#</th><th>Player</th><th class="num">Games</th><th class="num">Wins</th><th class="num">Win %</th><th class="num">Best</th></tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr class="{{ 'me' if r.display_name == user.display_name else '' }}">
+            <td class="rank {{ 'top' if loop.index <= 3 else '' }}">{{ loop.index }}</td>
+            <td>{{ r.display_name }}</td>
+            <td class="num">{{ r.games_played }}</td>
+            <td class="num">{{ r.wins }}</td>
+            <td class="num">{{ r.win_rate }}%</td>
+            <td class="num">{{ r.best_score if r.best_score is not none else '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty" style="border:none">
+        <div class="suits">♠ <span class="red">♥</span> <span class="red">♦</span> ♣</div>
+        No finished games yet. Play a match to get on the board!
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

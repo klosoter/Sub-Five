@@ -1,115 +1,129 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Sub-Five Lobby</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='lobby.css') }}">
+  <title>Sub-Five · Lobby</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='menu.css') }}">
   <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icon-192.png') }}">
 </head>
+<body class="menu">
+  <div class="page">
 
-<body class="lobby">
-  <h1>Card Game</h1>
+    <header class="topbar">
+      <div class="brand"><span class="pip">♠</span> Sub-Five</div>
+      <div class="topbar-actions">
+        <a class="btn btn--ghost" href="/leaderboard">🏆 Leaderboard</a>
+        {% if is_admin %}<a class="btn btn--ghost" href="/admin">🛡 Admin</a>{% endif %}
+        <a class="btn btn--ghost btn--icon" href="/account" title="Account settings" aria-label="Account settings">⚙</a>
+        <a class="user-chip" href="/profile" title="View your profile">
+          <span class="avatar" style="background:{{ user.avatar_color }}">{{ user.display_name[0]|upper }}</span>
+          <span class="who"><b>{{ user.display_name }}</b><span>View profile</span></span>
+        </a>
+        <form method="POST" action="/logout" style="margin:0">
+          <button class="btn btn--ghost btn--icon" type="submit" title="Sign out" aria-label="Sign out">⏻</button>
+        </form>
+      </div>
+    </header>
 
-  <a href="/create">
-    <button class="primary-btn">Create New Game</button>
-  </a>
+    <section class="hero">
+      <h1>Ready to play?</h1>
+      <p>Create a table and share the code, or jump into an open game below.</p>
+      <a class="btn btn--primary btn--lg" href="/create">＋ Create Game</a>
+    </section>
 
-  <h2>Available Rooms</h2>
-  <table class="room-table">
-    <thead>
-      <tr>
-        <th>Room Code</th>
-        <th>Players</th>
-        <th>Action</th>
-      </tr>
-    </thead>
-    <tbody id="room-list-body">
+    <div class="stat-row">
+      <div class="stat"><div class="num accent">{{ stats.games_played }}</div><div class="lbl">Games</div></div>
+      <div class="stat"><div class="num gold">{{ stats.games_won }}</div><div class="lbl">Wins</div></div>
+      <div class="stat"><div class="num">{{ stats.win_rate }}%</div><div class="lbl">Win rate</div></div>
+      <div class="stat"><div class="num">{{ stats.best_score if stats.best_score is not none else '—' }}</div><div class="lbl">Best score</div></div>
+    </div>
+
+    <h2 class="section-title">Open games <span class="count-pill" id="room-count">{{ room_list|length }}</span></h2>
+    <div class="room-grid" id="room-grid">
+      <!-- rendered by JS; server-side fallback below for no-JS -->
       {% for room in room_list %}
-      <tr>
-        <td>{{ room.code }}</td>
-        <td>{{ room.players | join(', ') }}</td>
-        <td>
-          <div class="room-controls">
-            {% if not room.started %}
-            <a href="/join/{{ room.code }}">
-              <button class="join-btn">Join</button>
-            </a>
-            {% else %}
-            In Progress
-            {% endif %}
-            <form method="POST" action="/delete-room/{{ room.code }}" style="display:inline;">
-              <button onclick="return confirm('Delete room {{ room.code }}?')" class="delete-btn">Delete</button>
-            </form>
-          </div>
-        </td>
-      </tr>
+      <div class="room-card">
+        <div class="rc-top">
+          <span class="room-code">{{ room.code }}</span>
+          <span class="status-pill {{ 'playing' if room.started else 'waiting' }}">{{ 'In progress' if room.started else 'Waiting' }}</span>
+        </div>
+        <div class="rc-players">{{ room.players|length }} player{{ '' if room.players|length == 1 else 's' }}{% if room.players %} · {{ room.players|join(', ') }}{% endif %}</div>
+        <div class="rc-actions">
+          {% if not room.started %}<a class="btn btn--primary" href="/join/{{ room.code }}">Join</a>{% endif %}
+          {% if room.is_host %}
+          <form method="POST" action="/delete-room/{{ room.code }}" style="flex:1;margin:0">
+            <button class="btn btn--danger btn--block" onclick="return confirm('Delete room {{ room.code }}?')">Delete</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
       {% endfor %}
-    </tbody>
-  </table>
+    </div>
+
+    <h2 class="section-title">🏆 Top players</h2>
+    <div class="panel" style="padding:0.5rem 0.5rem;">
+      {% if leaders %}
+      <table class="data-table">
+        <thead><tr><th class="rank">#</th><th>Player</th><th class="num">Wins</th><th class="num">Win %</th></tr></thead>
+        <tbody>
+          {% for r in leaders %}
+          <tr class="{{ 'me' if r.display_name == user.display_name else '' }}">
+            <td class="rank {{ 'top' if loop.index <= 3 else '' }}">{{ loop.index }}</td>
+            <td>{{ r.display_name }}</td>
+            <td class="num">{{ r.wins }}</td>
+            <td class="num">{{ r.win_rate }}%</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty" style="border:none">No games finished yet — be the first to top the board.</div>
+      {% endif %}
+    </div>
+
+  </div>
 
   <script>
-    async function refreshRooms() {
-      const res = await fetch("/room-list");
-      if (!res.ok) return;
-      const rooms = await res.json();
-      const tbody = document.getElementById("room-list-body");
-      tbody.innerHTML = "";
+    const EMPTY_HTML = `
+      <div class="empty">
+        <div class="suits">♠ <span class="red">♥</span> <span class="red">♦</span> ♣</div>
+        No open games right now. Create one to get started!
+      </div>`;
 
-      for (const room of rooms) {
-        const tr = document.createElement("tr");
-
-        const codeTd = document.createElement("td");
-        codeTd.textContent = room.code;
-
-        const playersTd = document.createElement("td");
-        playersTd.textContent = room.players.join(", ");
-
-        const actionTd = document.createElement("td");
-        actionTd.classList.add("no-padding");
-
-        const controlDiv = document.createElement("div");
-        controlDiv.classList.add("room-controls");
-
-        if (!room.started) {
-          const joinBtn = document.createElement("button");
-          joinBtn.textContent = "Join";
-          joinBtn.classList.add("join-btn");
-          joinBtn.classList.add("room-action-btn","room-action-join");
-          joinBtn.onclick = () => window.location.href = `/join/${room.code}`;
-          controlDiv.appendChild(joinBtn);
-        } else {
-          controlDiv.textContent = "In Progress";
-        }
-
-        const deleteForm = document.createElement("form");
-        deleteForm.method = "POST";
-        deleteForm.action = `/delete-room/${room.code}`;
-        deleteForm.style.display = "inline";
-
-        const deleteBtn = document.createElement("button");
-        deleteBtn.textContent = "Delete";
-        deleteBtn.classList.add("delete-btn");
-        deleteBtn.classList.add("room-action-btn", "room-action-delete");
-        deleteBtn.onclick = () => confirm(`Delete room ${room.code}?`);
-        deleteForm.appendChild(deleteBtn);
-
-        controlDiv.appendChild(deleteForm);
-        actionTd.appendChild(controlDiv);
-
-        tr.appendChild(codeTd);
-        tr.appendChild(playersTd);
-        tr.appendChild(actionTd);
-
-        tbody.appendChild(tr);
-      }
+    function roomCardHTML(room) {
+      const status = room.started
+        ? '<span class="status-pill playing">In progress</span>'
+        : '<span class="status-pill waiting">Waiting</span>';
+      const players = `${room.players.length} player${room.players.length === 1 ? '' : 's'}` +
+        (room.players.length ? ' · ' + room.players.join(', ') : '');
+      const join = room.started ? '' : `<a class="btn btn--primary" href="/join/${room.code}">Join</a>`;
+      const del = room.is_host
+        ? `<form method="POST" action="/delete-room/${room.code}" style="flex:1;margin:0">
+             <button class="btn btn--danger btn--block" onclick="return confirm('Delete room ${room.code}?')">Delete</button>
+           </form>` : '';
+      return `<div class="room-card">
+        <div class="rc-top"><span class="room-code">${room.code}</span>${status}</div>
+        <div class="rc-players">${players}</div>
+        <div class="rc-actions">${join}${del}</div>
+      </div>`;
     }
 
-    setInterval(refreshRooms, 3000);
+    async function refreshRooms() {
+      let rooms;
+      try {
+        const res = await fetch('/room-list');
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        if (!res.ok) return;
+        rooms = await res.json();
+      } catch { return; }
+      const grid = document.getElementById('room-grid');
+      document.getElementById('room-count').textContent = rooms.length;
+      grid.innerHTML = rooms.length ? rooms.map(roomCardHTML).join('') : EMPTY_HTML;
+    }
+
     refreshRooms();
+    setInterval(refreshRooms, 3000);
   </script>
 </body>
-
 </html>

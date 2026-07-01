@@ -1,35 +1,21 @@
-# Stage 1: Build frontend
-FROM node:20-slim AS frontend-builder
-
-WORKDIR /app/frontend
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm ci
-COPY frontend/ ./
-RUN npm run build
-
-# Stage 2: Python dependencies
-FROM python:3.11-slim AS backend-builder
-
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
-
-WORKDIR /app
-COPY requirements.txt ./
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --upgrade pip && pip install -r requirements.txt
-
-# Stage 3: Minimal runtime
+# Sub-Five monolith (Flask + Redis, polling-based game).
 FROM python:3.11-slim
 
-ENV PATH="/opt/venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    FLASK_ENV=production
+
 WORKDIR /app
 
-COPY --from=backend-builder /opt/venv /opt/venv
-COPY backend/ ./backend/
-COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt
+
+# Application code
+COPY server.py game.py db.py accounts.py ./
+COPY templates/ ./templates/
+COPY static/ ./static/
 
 EXPOSE 8080
 
-# Eventlet worker for WebSocket support (single worker required)
-CMD ["gunicorn", "-b", "0.0.0.0:8080", "-k", "eventlet", "-w", "1", "backend.wsgi:app"]
+# Rooms/game state live in Redis (shared), so multiple workers are safe.
+CMD ["gunicorn", "server:app", "--bind", "0.0.0.0:8080", "--workers", "2", "--timeout", "120"]
