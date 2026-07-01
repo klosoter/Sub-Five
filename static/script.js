@@ -18,6 +18,8 @@ const gameState = {
     readyPlayers: new Set(),
     previousRoundEnded: false,
     lastPlayed: [],
+    moveInFlight: false,      // a /play or /end-round request is pending
+    navigatingAway: false,    // a leave/end-game navigation has been triggered
     lastLoggedActionId: sessionStorage.getItem("lastLoggedActionId") || "",
     actionLog: []
 };
@@ -89,18 +91,47 @@ function getPlayerColor(name) {
     return PLAYER_COLORS[idx % PLAYER_COLORS.length];
 }
 
-// Shared by both mouse and keyboard input.
+// The "Play" glow: lit when it's your turn with a full move queued up. Cheap DOM
+// toggle, safe to call on every local interaction.
+function updateReadyPulse() {
+    const isYourTurn = gameState.playerName === gameState.currentPlayer;
+    DOM.playBtn.classList.toggle(
+        "ready-pulse",
+        isYourTurn && !gameState.roundEnded && gameState.selectedOrder.length > 0 && !!gameState.drawSource
+    );
+}
+
+// Re-apply the selected highlight/order to the hand IN PLACE — no /state fetch. This
+// keeps select/deselect instant even on slow connections. The 500ms poll stays the
+// source of truth for hands/turns; card selection is pure client state layered on top.
+function renderSelection() {
+    document.querySelectorAll(".player-hand [data-index]").forEach(card => {
+        const idx = parseInt(card.dataset.index, 10);
+        const order = gameState.selectedOrder.indexOf(idx);
+        if (order !== -1) {
+            card.classList.add("selected");
+            card.setAttribute("data-order", order + 1);
+        } else {
+            card.classList.remove("selected");
+            card.removeAttribute("data-order");
+        }
+    });
+    updateReadyPulse();
+}
+
+// Shared by both mouse and keyboard input — instant, local (no network round-trip).
 function toggleCardSelection(idx) {
     const pos = gameState.selectedOrder.indexOf(idx);
     if (pos !== -1) gameState.selectedOrder.splice(pos, 1);
     else gameState.selectedOrder.push(idx);
-    loadState();
+    renderSelection();
 }
 
 function toggleDrawSource(source) {
     gameState.drawSource = gameState.drawSource === source ? null : source;
     updateDeckDisplay();
     updatePileDisplay();
+    updateReadyPulse();
 }
 
 function clearSessionLog() {
@@ -131,28 +162,103 @@ document.addEventListener("fullscreenchange", () => {
     }
 });
 
-// Leaving is per-player: the server keeps the game going for everyone else and
-// only closes the room when fewer than 2 players remain. Robust to any error —
-// we navigate to the lobby regardless.
-async function quitGameAndRedirect() {
-    try {
-        await fetch("/leave", {method: "POST"});
-    } catch (e) {
-        // ignore — leaving the page anyway
+// === In-page popups (replace native alert()/confirm(), which block the page and
+// look out of place). Self-contained (inline styles) so they don't depend on the
+// board stylesheet. ===
+
+// Transient notification, bottom-center. Non-blocking.
+function showToast(message) {
+    let t = document.getElementById("sf-toast");
+    if (!t) {
+        t = document.createElement("div");
+        t.id = "sf-toast";
+        t.style.cssText =
+            "position:fixed;left:50%;bottom:8%;transform:translateX(-50%);z-index:10000;" +
+            "background:#222;color:#fff;padding:0.8vw 1.6vw;border-radius:0.5vw;font-family:inherit;" +
+            "font-size:1vw;max-width:70vw;text-align:center;box-shadow:0 4px 18px rgba(0,0,0,.45);" +
+            "border:1px solid rgba(255,255,255,.15);opacity:0;transition:opacity .18s;pointer-events:none;";
+        document.body.appendChild(t);
     }
+    t.textContent = message;
+    requestAnimationFrame(() => { t.style.opacity = "1"; });
+    clearTimeout(t._hideTimer);
+    t._hideTimer = setTimeout(() => { t.style.opacity = "0"; }, 2600);
+}
+
+// Promise-based confirm modal. Resolves true (confirm) / false (cancel/backdrop/Esc).
+function showConfirm(message, { okText = "OK", cancelText = "Cancel", danger = false } = {}) {
+    return new Promise((resolve) => {
+        document.getElementById("sf-modal")?.remove();
+        const overlay = document.createElement("div");
+        overlay.id = "sf-modal";
+        overlay.style.cssText =
+            "position:fixed;inset:0;z-index:10001;display:flex;align-items:center;justify-content:center;" +
+            "background:rgba(0,0,0,.55);font-family:inherit;";
+        const box = document.createElement("div");
+        box.style.cssText =
+            "background:#1b1b1b;color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:0.6vw;" +
+            "padding:1.6vw 1.8vw;max-width:34vw;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.5);";
+        const msg = document.createElement("div");
+        msg.textContent = message;
+        msg.style.cssText = "font-size:1.05vw;margin-bottom:1.4vw;line-height:1.4;";
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;gap:1vw;justify-content:center;";
+        const mkBtn = (label, bg) => {
+            const b = document.createElement("button");
+            b.textContent = label;
+            b.style.cssText =
+                "font:inherit;font-size:1vw;padding:0.55vw 1.4vw;border-radius:0.4vw;cursor:pointer;" +
+                "border:0.1vw solid rgba(255,255,255,.2);color:#fff;background:" + bg + ";";
+            return b;
+        };
+        const cancelBtn = mkBtn(cancelText, "#3a3a3a");
+        const okBtn = mkBtn(okText, danger ? "rgb(150 22 22)" : "#2e7d32");
+        const onKey = (e) => {
+            if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); done(false); }
+            else if (e.key === "Enter") { e.stopPropagation(); e.preventDefault(); done(true); }
+        };
+        const done = (val) => { overlay.remove(); document.removeEventListener("keydown", onKey, true); resolve(val); };
+        cancelBtn.onclick = () => done(false);
+        okBtn.onclick = () => done(true);
+        overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) done(false); });
+        document.addEventListener("keydown", onKey, true);  // capture: keep game shortcuts from firing
+        row.appendChild(cancelBtn); row.appendChild(okBtn);
+        box.appendChild(msg); box.appendChild(row); overlay.appendChild(box);
+        document.body.appendChild(overlay);
+        okBtn.focus();
+    });
+}
+
+// Reliable navigation for leave/end-game: a native form POST so the browser waits
+// for the server, follows its redirect, and completes the action even on very slow
+// connections — no fetch that could hang, and the leave finishes server-side before
+// "/" loads (so the dashboard can't resurrect the just-left game).
+function postAndGo(action) {
+    const f = document.createElement("form");
+    f.method = "POST";
+    f.action = action;
+    document.body.appendChild(f);
+    f.submit();
+}
+
+// Leaving is per-player: the server keeps the game going for everyone else and only
+// closes the room when fewer than 2 players remain. Guarded against double-fire.
+function quitGameAndRedirect() {
+    if (gameState.navigatingAway) return;
+    gameState.navigatingAway = true;
     clearSessionLog();
-    window.location.href = "/";
+    postAndGo("/leave");
 }
 
 // Confirm text depends on player count: with only 2 players, one leaving drops the
 // room below the 2-player minimum and closes it for the other, so we must not
-// promise "the others can keep playing".
+// promise "the others can keep playing". Returns a Promise<boolean>.
 function confirmLeave() {
     const others = Math.max(0, (gameState.allPlayers?.length || 0) - 1);
     const msg = others >= 2
         ? "Leave the game? The others can keep playing."
         : "Leave the game? This will end it for everyone.";
-    return confirm(msg);
+    return showConfirm(msg, { okText: "Leave", danger: true });
 }
 
 
@@ -219,8 +325,10 @@ function enforceTurnLock(handValue = null, roundEnded = false) {
 
     // Play / Finish only actually work on your turn (the server enforces this too).
     const finishMax = gameState.finishThreshold ?? 5;
-    DOM.playBtn.disabled = !isYourTurn || roundEnded;
-    DOM.endBtn.disabled = roundEnded ? false : (!isYourTurn || (handValue !== null && handValue > finishMax));
+    // moveInFlight keeps the button disabled across the 500ms poll while a /play or
+    // /end-round request is pending, so an impatient click on slow net can't double-fire.
+    DOM.playBtn.disabled = gameState.moveInFlight || !isYourTurn || roundEnded;
+    DOM.endBtn.disabled = gameState.moveInFlight || (roundEnded ? false : (!isYourTurn || (handValue !== null && handValue > finishMax)));
     DOM.endBtn.textContent = "Finish";
 
     // Selection stays interactive even when it is NOT your turn, so you can
@@ -237,10 +345,7 @@ function enforceTurnLock(handValue = null, roundEnded = false) {
         });
 
     // Highlight Play when it becomes your turn with a move already queued up.
-    DOM.playBtn.classList.toggle(
-        "ready-pulse",
-        isYourTurn && !roundEnded && gameState.selectedOrder.length > 0 && !!gameState.drawSource
-    );
+    updateReadyPulse();
 }
 
 // === 5. RENDERING FUNCTIONS ===
@@ -388,25 +493,36 @@ function renderRoundSummaryPopup(data) {
     readyBtn.textContent = readyLabel(initialIsReady);
 
     readyBtn.onclick = async () => {
+        // Disable while the toggle is in flight so an impatient click on slow net
+        // can't double-fire /ready-next-round (which would flip readiness back off).
+        if (readyBtn.dataset.busy) return;
+        readyBtn.dataset.busy = "1";
+        readyBtn.disabled = true;
         let res, result;
         try {
             res = await fetch("/ready-next-round", {method: "POST"});
             result = await res.json().catch(() => ({}));
         } catch (e) {
-            return alert("Network error — please try again.");
+            delete readyBtn.dataset.busy;
+            readyBtn.disabled = false;
+            return showToast("Network error — please try again.");
         }
         if (!res.ok || !result.ready || !Array.isArray(result.ready)) {
-            return alert(result.error || "Could not ready up — please try again.");
+            delete readyBtn.dataset.busy;
+            readyBtn.disabled = false;
+            return showToast(result.error || "Could not ready up — please try again.");
         }
 
-        const newReady = result.ready.includes(localName);
-        readyBtn.textContent = readyLabel(newReady);
+        readyBtn.textContent = readyLabel(result.ready.includes(localName));
 
         if (result.all_ready) {
             document.getElementById("round-popup")?.remove();
             clearSessionLog();
             DOM.logEntry.innerHTML = "";
             await loadState();
+        } else {
+            delete readyBtn.dataset.busy;
+            readyBtn.disabled = false;
         }
     };
 
@@ -434,8 +550,9 @@ function renderRoundSummaryPopup(data) {
     const quitBtn = document.createElement("button");
     quitBtn.classList.add("popup-close", "end-game");
     quitBtn.textContent = "Leave";
-    quitBtn.onclick = () => {
-        if (confirmLeave()) quitGameAndRedirect();
+    quitBtn.onclick = async () => {
+        if (gameState.navigatingAway) return;
+        if (await confirmLeave()) quitGameAndRedirect();
     };
     buttonContainer.appendChild(quitBtn);
 
@@ -598,11 +715,13 @@ function updateHostControls() {
     if (!endBtn.dataset.wired) {
         endBtn.dataset.wired = "1";
         endBtn.addEventListener("click", async () => {
-            if (!confirm("End the game for EVERYONE? This closes the table for all players.")) return;
-            const code = sessionStorage.getItem("roomCode");
-            try { await fetch(`/delete-room/${code}`, {method: "POST"}); } catch (e) {}
+            if (gameState.navigatingAway) return;
+            const ok = await showConfirm("End the game for EVERYONE? This closes the table for all players.",
+                { okText: "End game", danger: true });
+            if (!ok || gameState.navigatingAway) return;
+            gameState.navigatingAway = true;
             clearSessionLog();
-            window.location.href = "/";
+            postAndGo(`/delete-room/${sessionStorage.getItem("roomCode")}`);
         });
     }
     endBtn.style.display = gameState.isHost ? "" : "none";
@@ -637,10 +756,13 @@ function updateTurnWarning() {
 // === 8. EVENT LISTENERS ===
 function setupEventListeners() {
     DOM.playBtn.addEventListener("click", async () => {
-        if (!gameState.drawSource) return alert("Choose a draw source (deck or pile).");
-        if (gameState.selectedOrder.length === 0) return alert("Select cards to play.");
+        if (gameState.moveInFlight) return;  // a move is already being submitted
+        if (!gameState.drawSource) return showToast("Choose a draw source — click the deck or the pile.");
+        if (gameState.selectedOrder.length === 0) return showToast("Select the card(s) you want to play.");
 
         const selectedCards = gameState.selectedOrder.map(idx => gameState.hand[idx]);
+        gameState.moveInFlight = true;
+        DOM.playBtn.disabled = true;
         let res, result;
         try {
             res = await fetch("/play", {
@@ -650,24 +772,31 @@ function setupEventListeners() {
             });
             result = await res.json().catch(() => ({}));
         } catch (e) {
-            return alert("Network error — please try again.");
+            gameState.moveInFlight = false;
+            return showToast("Network error — please try again.");
         }
 
         gameState.selectedOrder = [];
         gameState.drawSource = null;
-        if (!res.ok) return alert(result.error || "Invalid move.");
+        gameState.moveInFlight = false;
+        if (!res.ok) return showToast(result.error || "Invalid move.");
         await loadState();
     });
 
     DOM.endBtn.addEventListener("click", async () => {
+        if (gameState.moveInFlight) return;
+        gameState.moveInFlight = true;
+        DOM.endBtn.disabled = true;
         let res, result;
         try {
             res = await fetch("/end-round", {method: "POST", headers: {"Content-Type": "application/json"}});
             result = await res.json().catch(() => ({}));   // 204 success has no body
         } catch (e) {
-            return alert("Network error — please try again.");
+            gameState.moveInFlight = false;
+            return showToast("Network error — please try again.");
         }
-        if (!res.ok) return alert(result.error || "Could not end round.");
+        gameState.moveInFlight = false;
+        if (!res.ok) return showToast(result.error || "Could not end round.");
 
         gameState.selectedOrder = [];
         gameState.drawSource = null;
@@ -675,8 +804,9 @@ function setupEventListeners() {
         await loadState();
     });
 
-    DOM.endGameBtn?.addEventListener("click", () => {
-        if (confirmLeave()) quitGameAndRedirect();
+    DOM.endGameBtn?.addEventListener("click", async () => {
+        if (gameState.navigatingAway) return;
+        if (await confirmLeave()) quitGameAndRedirect();
     });
 
     document.addEventListener("mousedown", (e) => {
@@ -707,6 +837,7 @@ function setupEventListeners() {
         if (e.metaKey || e.ctrlKey || e.altKey) return;
         const tag = (e.target.tagName || "").toUpperCase();
         if (tag === "INPUT" || tag === "TEXTAREA") return;
+        if (document.getElementById("sf-modal")) return;  // a confirm modal owns the keys
 
         if (document.getElementById("round-popup")) {
             if (e.key === "Enter" || e.key.toLowerCase() === "r") {
@@ -730,7 +861,14 @@ function setupEventListeners() {
             case "f":      if (!DOM.endBtn.disabled) DOM.endBtn.click(); e.preventDefault(); break;
             case "d":      if (isYourTurn) toggleDrawSource("deck"); e.preventDefault(); break;
             case "p":      if (isYourTurn) toggleDrawSource("pile"); e.preventDefault(); break;
-            case "escape": gameState.selectedOrder = []; gameState.drawSource = null; loadState(); e.preventDefault(); break;
+            case "escape":
+                gameState.selectedOrder = [];
+                gameState.drawSource = null;
+                renderSelection();       // local — no /state fetch
+                updateDeckDisplay();
+                updatePileDisplay();
+                e.preventDefault();
+                break;
         }
     });
 

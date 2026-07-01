@@ -48,9 +48,12 @@
       navigator.clipboard.writeText(link).then(() => toast("Invite link copied"));
     }
 
-    document.getElementById("leaveBtn").addEventListener("click", async () => {
-      await fetch("/leave", { method: "POST" });
-      window.location.href = "/";
+    document.getElementById("leaveBtn").addEventListener("click", () => {
+      // Native form POST: the browser waits for the server and follows its redirect,
+      // so leaving is reliable even on a slow connection.
+      const f = document.createElement("form");
+      f.method = "POST"; f.action = "/leave";
+      document.body.appendChild(f); f.submit();
     });
 
     async function toggleReady() {

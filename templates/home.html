@@ -40,7 +40,7 @@
       </div>
       <div class="active-banner__actions">
         <a class="btn btn--primary" href="{{ '/game' if my_game.started else '/join/' + my_game.code }}">Rejoin →</a>
-        <form method="POST" action="/leave" style="margin:0" onsubmit="return confirm('Leave game {{ my_game.code }}?')">
+        <form method="POST" action="/leave" style="margin:0" data-confirm="Leave game {{ my_game.code }}?" data-ok="Leave">
           <button class="btn btn--danger" type="submit">Leave</button>
         </form>
       </div>
@@ -67,8 +67,8 @@
         <div class="rc-actions">
           {% if not room.started %}<a class="btn btn--primary" href="/join/{{ room.code }}">Join</a>{% endif %}
           {% if room.is_host %}
-          <form method="POST" action="/delete-room/{{ room.code }}" style="flex:1;margin:0">
-            <button class="btn btn--danger btn--block" onclick="return confirm('Delete room {{ room.code }}?')">Delete</button>
+          <form method="POST" action="/delete-room/{{ room.code }}" style="flex:1;margin:0" data-confirm="Delete room {{ room.code }}?" data-ok="Delete">
+            <button class="btn btn--danger btn--block" type="submit">Delete</button>
           </form>
           {% endif %}
         </div>
@@ -114,8 +114,8 @@
         (room.players.length ? ' · ' + room.players.join(', ') : '');
       const join = room.started ? '' : `<a class="btn btn--primary" href="/join/${room.code}">Join</a>`;
       const del = room.is_host
-        ? `<form method="POST" action="/delete-room/${room.code}" style="flex:1;margin:0">
-             <button class="btn btn--danger btn--block" onclick="return confirm('Delete room ${room.code}?')">Delete</button>
+        ? `<form method="POST" action="/delete-room/${room.code}" style="flex:1;margin:0" data-confirm="Delete room ${room.code}?" data-ok="Delete">
+             <button class="btn btn--danger btn--block" type="submit">Delete</button>
            </form>` : '';
       return `<div class="room-card">
         <div class="rc-top"><span class="room-code">${room.code}</span>${status}</div>
@@ -139,6 +139,38 @@
 
     refreshRooms();
     setInterval(refreshRooms, 3000);
+
+    // In-page confirm modal (replaces native confirm) for any form with data-confirm.
+    // Works for both server-rendered and JS-rendered room cards via event delegation.
+    function sfConfirm(message, okText) {
+      return new Promise((resolve) => {
+        document.getElementById('sf-modal')?.remove();
+        const ov = document.createElement('div');
+        ov.id = 'sf-modal';
+        ov.style.cssText = 'position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55)';
+        const box = document.createElement('div');
+        box.style.cssText = 'background:var(--bg-elevated,#1b1b1b);color:var(--text-primary,#fff);border:1px solid var(--border-default,rgba(255,255,255,.15));border-radius:12px;padding:1.4rem 1.6rem;max-width:22rem;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.5)';
+        const msg = document.createElement('div'); msg.textContent = message; msg.style.cssText = 'margin-bottom:1.2rem;line-height:1.4';
+        const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:.6rem;justify-content:center';
+        const cancel = document.createElement('button'); cancel.className = 'btn btn--ghost'; cancel.textContent = 'Cancel';
+        const ok = document.createElement('button'); ok.className = 'btn btn--danger'; ok.textContent = okText || 'Confirm';
+        const done = (v) => { ov.remove(); resolve(v); };
+        cancel.onclick = () => done(false); ok.onclick = () => done(true);
+        ov.addEventListener('mousedown', (e) => { if (e.target === ov) done(false); });
+        row.append(cancel, ok); box.append(msg, row); ov.append(box); document.body.appendChild(ov);
+        ok.focus();
+      });
+    }
+
+    document.addEventListener('submit', async (e) => {
+      const form = e.target;
+      if (!form.dataset || !form.dataset.confirm || form.dataset.confirmed) return;
+      e.preventDefault();
+      if (await sfConfirm(form.dataset.confirm, form.dataset.ok)) {
+        form.dataset.confirmed = '1';
+        form.submit();
+      }
+    });
   </script>
 </body>
 </html>

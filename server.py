@@ -770,7 +770,7 @@ def toggle_ready(code):
     with room_lock(code):
         room = load_room(code)
         if not room or not name or name not in room["players"]:
-            return jsonify({"error": "Invalid session"})
+            return jsonify({"error": "Invalid session"}), 400  # 400 so res.ok is false client-side
 
         # Toggle readiness
         room["ready"][name] = not room["ready"].get(name, False)
@@ -836,10 +836,12 @@ def delete_room_route(code):
 @login_required
 def leave():
     _do_leave(session.get("room"), session.get("player_name"))
-    # Leave the room but keep the account logged in.
+    # Leave the room but keep the account logged in. Return a real redirect so a
+    # native <form> POST (dashboard banner, waiting room) navigates correctly, and
+    # a fetch() caller follows it too — the leave is fully processed before "/" loads.
     session.pop("room", None)
     session.pop("player_name", None)
-    return jsonify({"redirect": "/"})
+    return redirect("/")
 
 
 @app.route("/end-room", methods=["POST"])

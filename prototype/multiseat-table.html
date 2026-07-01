@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sub-Five — multi-seat table PROTOTYPE</title>
+<!--
+  STANDALONE PROTOTYPE — not wired into the game. Demonstrates dynamic seating
+  for >4 players, per-player card-count adaptation, and a clearer turn indicator.
+  Open with ?n=6&turn=2  (n = 2..8 players, turn = active seat index, 0 = you).
+-->
+<style>
+  :root{
+    --felt1:#0b6d3b; --felt2:#02341c; --rail:#3c2015;
+    --gold:#f4c75a; --accent:#2fd98b; --ink:#12100f;
+  }
+  *{ box-sizing:border-box; margin:0; }
+  body{
+    font-family:"Inter","Segoe UI",system-ui,sans-serif; color:#eef2ee;
+    background:radial-gradient(ellipse 80% 60% at 50% -10%,rgba(47,217,139,.08),transparent 60%),#0a1410;
+    min-height:100vh; display:flex; flex-direction:column; align-items:center; padding:1rem; gap:.6rem;
+  }
+  h1{ font-size:1rem; font-weight:700; color:#9fb3a8; letter-spacing:.02em; }
+  .controls{ display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
+  .controls button, .controls select{
+    background:#16261e; color:#eef2ee; border:1px solid rgba(255,255,255,.14);
+    border-radius:.5rem; padding:.4rem .8rem; cursor:pointer; font:inherit;
+  }
+  .controls button:hover{ background:#1d3227; }
+
+  /* ---- turn banner (clear, above the table) ---- */
+  .banner{
+    display:flex; align-items:center; gap:.6rem; font-weight:700; font-size:1.15rem;
+    padding:.4rem 1rem; border-radius:999px; background:rgba(0,0,0,.35); min-height:2.2rem;
+  }
+  .banner .dot{ width:.8rem; height:.8rem; border-radius:50%; box-shadow:0 0 12px currentColor; }
+
+  /* ---- table ---- */
+  .felt-wrap{ width:min(96vw,1120px); aspect-ratio:16/10; position:relative; }
+  .felt{
+    position:absolute; inset:0; border-radius:47% / 46%;
+    background:radial-gradient(ellipse at 50% 40%, var(--felt1), var(--felt2));
+    border:1.3vw solid var(--rail);
+    box-shadow:inset 0 0 6vw rgba(0,0,0,.55), 0 1rem 3rem rgba(0,0,0,.55);
+  }
+  .turn-svg{ position:absolute; inset:0; pointer-events:none; overflow:visible; }
+
+  .center{
+    position:absolute; left:50%; top:41%; transform:translate(-50%,-50%);
+    display:flex; gap:1.1vw; align-items:center;
+  }
+
+  .card{
+    background:#fff; color:#151515; border-radius:.4vw; position:relative;
+    box-shadow:0 .18vw .5vw rgba(0,0,0,.4); font-weight:800; display:grid; place-items:center;
+  }
+  .card.red{ color:#d21c1c; }
+  .card .corner{ position:absolute; top:.15vw; left:.3vw; font-size:.9vw; line-height:1; }
+  .card.back{
+    background:
+      repeating-linear-gradient(45deg,#b52a2a 0 6px,#8a1f1f 6px 12px);
+    border:1.5px solid rgba(255,255,255,.5);
+  }
+
+  /* ---- a seat (opponent) ---- */
+  .seat{
+    position:absolute; transform:translate(-50%,-50%);
+    display:flex; flex-direction:column; align-items:center; gap:.45vw;
+    transition:transform .2s ease;
+  }
+  .seat .hand{ position:relative; }             /* fanned backs, JS sets width/positions */
+  .seat .label{
+    display:flex; align-items:center; gap:.35vw; font-weight:600; font-size:1vw; white-space:nowrap;
+    background:rgba(0,0,0,.4); padding:.2vw .7vw; border-radius:999px; border:1px solid transparent;
+  }
+  .seat .label .cnt{ color:#bfead4; font-weight:700; }
+
+  /* active seat: ring + lift + bright label */
+  .seat.active{ transform:translate(-50%,-50%) scale(1.08); z-index:6; }
+  .seat.active .label{ border-color:var(--accent); color:#eafff5; box-shadow:0 0 1.4vw rgba(47,217,139,.5); }
+  .seat.active .hand::after{
+    content:""; position:absolute; inset:-14% -8%; border-radius:1rem;
+    box-shadow:0 0 0 .28vw var(--accent), 0 0 2.4vw rgba(47,217,139,.6);
+    animation:pulse 1.2s ease-in-out infinite; pointer-events:none;
+  }
+  @keyframes pulse{ 0%,100%{opacity:.85} 50%{opacity:.4} }
+
+  /* ---- you (bottom centre) ---- */
+  .you{
+    position:absolute; left:50%; top:88%; transform:translate(-50%,-50%);
+    display:flex; flex-direction:column; align-items:center; gap:.5vw;
+  }
+  .you .label{
+    display:flex; align-items:center; gap:.4vw; font-weight:700; font-size:1.1vw;
+    background:rgba(0,0,0,.4); padding:.2vw .8vw; border-radius:999px; border:1px solid transparent;
+  }
+  .you.active .label{ border-color:var(--accent); color:#eafff5; box-shadow:0 0 1.4vw rgba(47,217,139,.55); }
+  .you .hand{ position:relative; }
+</style>
+</head>
+<body>
+  <h1>PROTOTYPE · dynamic seating for &gt;4 players (not wired into the game)</h1>
+  <div class="controls">
+    <label>Players
+      <select id="nsel">
+        <option>2</option><option>3</option><option>4</option>
+        <option selected>6</option><option>7</option><option>8</option>
+      </select>
+    </label>
+    <button id="turnBtn">▶ Next turn</button>
+    <button id="dealBtn">🔀 Shuffle card counts</button>
+  </div>
+
+  <div class="banner" id="banner"></div>
+
+  <div class="felt-wrap">
+    <div class="felt"></div>
+    <svg class="turn-svg" id="turnSvg" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+    <!-- seats + center injected here -->
+    <div id="seats"></div>
+  </div>
+
+<script>
+const PLAYER_COLORS = ["#2fd98b","#8fd4ff","#ffadad","#ffe083","#d1aaff","#f4c75a","#ff9f68","#c792ea"];
+const SUITS = [["♠","black"],["♥","red"],["♦","red"],["♣","black"]];
+const RANKS = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"];
+const params = new URLSearchParams(location.search);
+
+let N = clamp(parseInt(params.get("n")) || 6, 2, 8);
+let turn = clamp(parseInt(params.get("turn")) || 0, 0, N-1);
+let counts = makeCounts(N);
+const names = ["You","Ava","Ben","Cara","Dan","Eve","Finn","Gus"];
+
+function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+function makeCounts(n){ return Array.from({length:n}, (_,i)=> i===0 ? 5 : 1 + Math.floor(Math.random()*9)); }
+
+// Opponent seat position (% of the felt) along the TOP arc; you sit at the bottom.
+function seatPos(i, m){
+  const cx=50, cy=40, rx=43, ry=37;
+  const t=(i+1)/(m+1);
+  const ang=(200 + t*(-20-200))*Math.PI/180;   // 200deg (left-bottom) over top to -20deg (right-bottom)
+  return { x: cx + rx*Math.cos(ang), y: cy - ry*Math.sin(ang) };
+}
+
+// Fan `count` cards inside a target width; tighter overlap as the count grows.
+function fan(count, cardW, maxW){
+  const step = count<=1 ? 0 : Math.min(cardW*0.62, (maxW-cardW)/(count-1));
+  const total = cardW + step*(count-1);
+  return { step, total, cardW };
+}
+
+function el(tag, cls, css){ const e=document.createElement(tag); if(cls)e.className=cls; if(css)Object.assign(e.style,css); return e; }
+
+function backHand(count, cardWvw){
+  const wrap = el("div","hand");
+  const cardW = cardWvw;                    // in vw
+  const maxW = Math.max(cardW*2.2, cardW + cardW*0.62*8); // cap fan width
+  const f = fan(count, cardW, maxW);
+  wrap.style.width = f.total+"vw";
+  wrap.style.height = (cardW*1.4)+"vw";
+  for(let i=0;i<count;i++){
+    const c = el("div","card back");
+    c.style.width=cardW+"vw"; c.style.height=(cardW*1.4)+"vw";
+    c.style.position="absolute"; c.style.left=(i*f.step)+"vw"; c.style.top="0"; c.style.zIndex=i;
+    wrap.appendChild(c);
+  }
+  return wrap;
+}
+function faceHand(count, cardWvw){
+  const wrap = el("div","hand");
+  const cardW=cardWvw, maxW=cardW + cardW*0.7*(count-1);
+  const f = fan(count, cardW, Math.max(maxW, cardW));
+  wrap.style.width=f.total+"vw"; wrap.style.height=(cardW*1.4)+"vw";
+  for(let i=0;i<count;i++){
+    const [s,color]=SUITS[Math.floor(Math.random()*4)]; const r=RANKS[Math.floor(Math.random()*RANKS.length)];
+    const c=el("div","card"+(color==="red"?" red":""));
+    c.style.width=cardW+"vw"; c.style.height=(cardW*1.4)+"vw"; c.style.fontSize=(cardW*0.5)+"vw";
+    c.style.position="absolute"; c.style.left=(i*f.step)+"vw"; c.style.zIndex=i;
+    c.innerHTML=`<span class="corner">${r}</span>${s}`;
+    wrap.appendChild(c);
+  }
+  return wrap;
+}
+
+function render(){
+  N=clamp(N,2,8); turn=clamp(turn,0,N-1);
+  if(counts.length!==N) counts=makeCounts(N);
+  const seats=document.getElementById("seats"); seats.innerHTML="";
+  const svg=document.getElementById("turnSvg"); svg.innerHTML="";
+
+  // opponent card width shrinks as the table fills up
+  const oppW = ({2:3.4,3:3.2,4:3.0,5:2.7,6:2.5,7:2.3,8:2.1})[N] || 2.4;
+
+  // center: deck + pile
+  const center=el("div","center");
+  const deck=el("div","card back"); deck.style.width="3.4vw"; deck.style.height="4.76vw";
+  const pile=el("div","card red"); pile.style.width="3.4vw"; pile.style.height="4.76vw"; pile.style.fontSize="1.7vw";
+  pile.innerHTML=`<span class="corner">Q</span>♦`;
+  center.append(deck,pile); seats.appendChild(center);
+
+  const m=N-1;                                  // opponents
+  const active = {x:50,y:88};                   // default: you
+  for(let i=0;i<m;i++){
+    const pIdx=i+1;
+    const pos=seatPos(i,m);
+    const seat=el("div","seat"); seat.style.left=pos.x+"%"; seat.style.top=pos.y+"%";
+    if(pIdx===turn){ seat.classList.add("active"); active.x=pos.x; active.y=pos.y; }
+    seat.appendChild(backHand(counts[pIdx], oppW));
+    const label=el("div","label");
+    const color=PLAYER_COLORS[pIdx%PLAYER_COLORS.length];
+    label.innerHTML=`<span style="width:.7vw;height:.7vw;border-radius:50%;background:${color}"></span>
+                     ${names[pIdx]} <span class="cnt">🂠 ${counts[pIdx]}</span> · ${20+pIdx*7}`;
+    seat.appendChild(label);
+    seats.appendChild(seat);
+  }
+
+  // you (bottom centre)
+  const you=el("div","you"); if(turn===0){ you.classList.add("active"); active.x=50; active.y=86; }
+  you.appendChild(faceHand(counts[0],3.6));
+  const yl=el("div","label");
+  yl.innerHTML=`<span style="width:.8vw;height:.8vw;border-radius:50%;background:${PLAYER_COLORS[0]}"></span> You <span class="cnt">🂠 ${counts[0]}</span> · 12`;
+  you.appendChild(yl);
+  seats.appendChild(you);
+
+  // turn pointer: a glowing line from the centre to the active seat
+  const cx=50, cy=41;
+  const line=document.createElementNS("http://www.w3.org/2000/svg","line");
+  line.setAttribute("x1",cx); line.setAttribute("y1",cy);
+  line.setAttribute("x2", cx+(active.x-cx)*0.62); line.setAttribute("y2", cy+(active.y-cy)*0.62);
+  line.setAttribute("stroke","#2fd98b"); line.setAttribute("stroke-width","0.7");
+  line.setAttribute("stroke-linecap","round"); line.setAttribute("opacity","0.9");
+  line.setAttribute("filter","drop-shadow(0 0 2px #2fd98b)");
+  const tip=document.createElementNS("http://www.w3.org/2000/svg","circle");
+  tip.setAttribute("cx", cx+(active.x-cx)*0.62); tip.setAttribute("cy", cy+(active.y-cy)*0.62);
+  tip.setAttribute("r","1.1"); tip.setAttribute("fill","#2fd98b");
+  svg.append(line,tip);
+
+  // banner
+  const b=document.getElementById("banner");
+  const nm = turn===0 ? "You" : names[turn];
+  const col = PLAYER_COLORS[turn%PLAYER_COLORS.length];
+  b.innerHTML = turn===0
+    ? `<span class="dot" style="color:${col}"></span> Your turn`
+    : `<span class="dot" style="color:${col}"></span> Waiting on <span style="color:${col}">${nm}</span>`;
+}
+
+document.getElementById("nsel").value=String(N);
+document.getElementById("nsel").onchange=e=>{ N=+e.target.value; turn=0; counts=makeCounts(N); render(); };
+document.getElementById("turnBtn").onclick=()=>{ turn=(turn+1)%N; render(); };
+document.getElementById("dealBtn").onclick=()=>{ counts=makeCounts(N); render(); };
+render();
+</script>
+</body>
+</html>
