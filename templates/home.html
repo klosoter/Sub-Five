@@ -32,6 +32,21 @@
       <a class="btn btn--primary btn--lg" href="/create">＋ Create Game</a>
     </section>
 
+    {% if my_game %}
+    <div class="active-banner">
+      <div class="active-banner__text">
+        <strong>You're in game {{ my_game.code }}</strong>
+        <span>{{ 'In progress' if my_game.started else 'Waiting to start' }}{% if my_game.is_host %} · you're the host 👑{% endif %}</span>
+      </div>
+      <div class="active-banner__actions">
+        <a class="btn btn--primary" href="{{ '/game' if my_game.started else '/join/' + my_game.code }}">Rejoin →</a>
+        <form method="POST" action="/leave" style="margin:0" onsubmit="return confirm('Leave game {{ my_game.code }}?')">
+          <button class="btn btn--danger" type="submit">Leave</button>
+        </form>
+      </div>
+    </div>
+    {% endif %}
+
     <div class="stat-row">
       <div class="stat"><div class="num accent">{{ stats.games_played }}</div><div class="lbl">Games</div></div>
       <div class="stat"><div class="num gold">{{ stats.games_won }}</div><div class="lbl">Wins</div></div>

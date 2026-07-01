@@ -3,6 +3,12 @@ const gameState = {
     hand: [],
     selectedOrder: [],
     drawSource: null,
+    finishThreshold: 5,   // admin-configurable; kept in sync from /state
+    hostName: null,
+    isHost: false,
+    turnElapsed: 0,       // seconds the current player has held the turn
+    turnWarnAt: 30,       // show the warning countdown from here
+    turnTimeout: 90,      // auto-removed at this point
     currentPlayer: "",
     pileTop: "🂠",
     allPlayers: [],
@@ -83,6 +89,20 @@ function getPlayerColor(name) {
     return PLAYER_COLORS[idx % PLAYER_COLORS.length];
 }
 
+// Shared by both mouse and keyboard input.
+function toggleCardSelection(idx) {
+    const pos = gameState.selectedOrder.indexOf(idx);
+    if (pos !== -1) gameState.selectedOrder.splice(pos, 1);
+    else gameState.selectedOrder.push(idx);
+    loadState();
+}
+
+function toggleDrawSource(source) {
+    gameState.drawSource = gameState.drawSource === source ? null : source;
+    updateDeckDisplay();
+    updatePileDisplay();
+}
+
 function clearSessionLog() {
     sessionStorage.removeItem("actionLog");
     sessionStorage.removeItem("lastLoggedActionId");
@@ -111,15 +131,28 @@ document.addEventListener("fullscreenchange", () => {
     }
 });
 
+// Leaving is per-player: the server keeps the game going for everyone else and
+// only closes the room when fewer than 2 players remain. Robust to any error —
+// we navigate to the lobby regardless.
 async function quitGameAndRedirect() {
-    const code = sessionStorage.getItem("roomCode");
-    if (!code) return;
-
-    const res = await fetch(`/delete-room/${code}`, {method: "POST"});
-    if (res.redirected) {
-        clearSessionLog();
-        window.location.href = res.url;
+    try {
+        await fetch("/leave", {method: "POST"});
+    } catch (e) {
+        // ignore — leaving the page anyway
     }
+    clearSessionLog();
+    window.location.href = "/";
+}
+
+// Confirm text depends on player count: with only 2 players, one leaving drops the
+// room below the 2-player minimum and closes it for the other, so we must not
+// promise "the others can keep playing".
+function confirmLeave() {
+    const others = Math.max(0, (gameState.allPlayers?.length || 0) - 1);
+    const msg = others >= 2
+        ? "Leave the game? The others can keep playing."
+        : "Leave the game? This will end it for everyone.";
+    return confirm(msg);
 }
 
 
@@ -185,8 +218,9 @@ function enforceTurnLock(handValue = null, roundEnded = false) {
     const isYourTurn = gameState.playerName === gameState.currentPlayer;
 
     // Play / Finish only actually work on your turn (the server enforces this too).
+    const finishMax = gameState.finishThreshold ?? 5;
     DOM.playBtn.disabled = !isYourTurn || roundEnded;
-    DOM.endBtn.disabled = roundEnded ? false : (!isYourTurn || (handValue !== null && handValue > 5));
+    DOM.endBtn.disabled = roundEnded ? false : (!isYourTurn || (handValue !== null && handValue > finishMax));
     DOM.endBtn.textContent = "Finish";
 
     // Selection stays interactive even when it is NOT your turn, so you can
@@ -217,7 +251,10 @@ function renderTable(players, scores = {}) {
     const youIndex = players.findIndex(p => p.name === gameState.playerName);
     const rotated = [...players.slice(youIndex + 1), ...players.slice(0, youIndex)];
     const you = players[youIndex];
-    const seatMap = ["left", "right", "top"];
+    // Seats follow turn order around the table: the next player after you sits on
+    // your left, then across the top, then on your right (a smooth arc, not a
+    // left/right/top zig-zag).
+    const seatMap = ["left", "top", "right"];
 
     rotated.forEach((player, idx) => {
         if (idx >= 3) return;
@@ -227,7 +264,8 @@ function renderTable(players, scores = {}) {
         const nameLabel = document.createElement("div");
         nameLabel.classList.add("player-label");
         const score = scores[player.name] ?? 0;
-        nameLabel.textContent = `${player.name} (${score})`;
+        const crown = player.name === gameState.hostName ? " 👑" : "";
+        nameLabel.textContent = `${player.name}${crown} (${score})`;
         if (player.name === gameState.currentPlayer) {
             nameLabel.classList.add("current-turn");
         }
@@ -254,7 +292,8 @@ function renderTable(players, scores = {}) {
         const label = document.createElement("div");
         if (you.name === gameState.currentPlayer) label.classList.add("current-turn");
         label.classList.add("player-label");
-        label.textContent = `${you.name} (${you.score ?? 0})`;
+        const youCrown = you.name === gameState.hostName ? " 👑" : "";
+        label.textContent = `${you.name}${youCrown} (${you.score ?? 0})`;
 
         const handBox = document.createElement("div");
         handBox.classList.add("hand-box");
@@ -342,16 +381,23 @@ function renderRoundSummaryPopup(data) {
     // === Ready Button ===
     const readyBtn = document.createElement("button");
     readyBtn.classList.add("popup-close");
+    readyBtn.id = "round-ready-btn";
     const readyLabel = (ready) => isGameOver
         ? (ready ? "Cancel Rematch" : "🔄 Rematch")
         : (ready ? "Cancel Ready" : "I'm Ready");
     readyBtn.textContent = readyLabel(initialIsReady);
 
     readyBtn.onclick = async () => {
-        const res = await fetch("/ready-next-round", {method: "POST"});
-        const result = await res.json();
-
-        if (!result.ready || !Array.isArray(result.ready)) return;
+        let res, result;
+        try {
+            res = await fetch("/ready-next-round", {method: "POST"});
+            result = await res.json().catch(() => ({}));
+        } catch (e) {
+            return alert("Network error — please try again.");
+        }
+        if (!res.ok || !result.ready || !Array.isArray(result.ready)) {
+            return alert(result.error || "Could not ready up — please try again.");
+        }
 
         const newReady = result.ready.includes(localName);
         readyBtn.textContent = readyLabel(newReady);
@@ -387,9 +433,9 @@ function renderRoundSummaryPopup(data) {
 
     const quitBtn = document.createElement("button");
     quitBtn.classList.add("popup-close", "end-game");
-    quitBtn.textContent = "Quit";
+    quitBtn.textContent = "Leave";
     quitBtn.onclick = () => {
-        quitGameAndRedirect();
+        if (confirmLeave()) quitGameAndRedirect();
     };
     buttonContainer.appendChild(quitBtn);
 
@@ -429,15 +475,31 @@ function renderGameOverNotice(data) {
 
 // === 7. STATE LOADER ===
 async function loadState() {
-    const res = await fetch("/state");
-    const data = await res.json();
+  try {
+    let res, data;
+    try {
+        res = await fetch("/state");
+        data = await res.json();
+    } catch (e) {
+        // Network blip or a non-JSON body (e.g. a 5xx HTML error page). Skip this
+        // tick and let the next poll retry — never break the loop.
+        return;
+    }
 
-    if (data.error === "Room closed" || data.error === "Invalid session") {
+    // Session/room genuinely gone -> back to the lobby cleanly.
+    if (data && (data.error === "Room closed" || data.error === "Invalid session")) {
         sessionStorage.clear();
         window.location.href = "/";
         return;
     }
 
+    // Any other error, non-2xx, or malformed payload (missing players): skip this
+    // tick and retry. This is what a transient 400/"Game not started"/5xx returns.
+    if (!res.ok || !data || !Array.isArray(data.players)) {
+        return;
+    }
+    const current = data.players.find(p => Array.isArray(p.hand));
+    if (!current) return;  // no self in the payload — bail defensively
 
     const state = gameState;
     const popup = document.getElementById("round-popup");
@@ -459,11 +521,16 @@ async function loadState() {
 
     renderGameOverNotice(data);
 
-    const current = data.players.find(p => Array.isArray(p.hand));
     state.playerName = current.name;
     state.currentPlayer = data.currentPlayer;
     state.allPlayers = data.players.map(p => p.name);
     state.hand = current.hand || [];
+    state.finishThreshold = data.finishThreshold ?? 5;
+    state.hostName = data.hostName ?? null;
+    state.isHost = data.isHost === true;
+    state.turnElapsed = data.turnElapsed ?? 0;
+    state.turnWarnAt = data.turnWarnAt ?? 30;
+    state.turnTimeout = data.turnTimeout ?? 90;
 
     // Keep any pre-selection valid against the current hand size.
     state.selectedOrder = state.selectedOrder.filter(i => i < state.hand.length);
@@ -514,83 +581,157 @@ async function loadState() {
     updateDeckDisplay();
     updateTurnIndicator();
     enforceTurnLock(current.hand_value, state.roundEnded);
+    updateHostControls();
+    updateTurnWarning();
+  } catch (e) {
+    // Any render error is logged and swallowed so the 500ms poll loop survives.
+    console.error("loadState error (ignored, will retry):", e);
+  }
+}
+
+// The host gets an extra "End Game" button (in index.html, hidden by default) beside
+// Leave: it closes the room for everyone (POST /delete-room), whereas Leave only
+// removes the host — the crown then passes to another player and the game continues.
+function updateHostControls() {
+    const endBtn = document.getElementById("host-end-game");
+    if (!endBtn) return;
+    if (!endBtn.dataset.wired) {
+        endBtn.dataset.wired = "1";
+        endBtn.addEventListener("click", async () => {
+            if (!confirm("End the game for EVERYONE? This closes the table for all players.")) return;
+            const code = sessionStorage.getItem("roomCode");
+            try { await fetch(`/delete-room/${code}`, {method: "POST"}); } catch (e) {}
+            clearSessionLog();
+            window.location.href = "/";
+        });
+    }
+    endBtn.style.display = gameState.isHost ? "" : "none";
+}
+
+// Warning countdown while the current player is idle: once the server reports the
+// turn has been held past turnWarnAt, show a banner counting down to turnTimeout,
+// at which point the server auto-removes them and the table unfreezes.
+function updateTurnWarning() {
+    let banner = document.getElementById("turn-warning");
+    const active = !gameState.roundEnded && !document.getElementById("round-popup");
+    const remaining = gameState.turnTimeout - gameState.turnElapsed;
+    if (!active || gameState.turnElapsed < gameState.turnWarnAt || remaining <= 0) {
+        if (banner) banner.remove();
+        return;
+    }
+    if (!banner) {
+        banner = document.createElement("div");
+        banner.id = "turn-warning";
+        banner.style.cssText =
+            "position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999;" +
+            "background:#7a1f1f;color:#fff;padding:8px 16px;border-radius:8px;font-weight:600;" +
+            "box-shadow:0 4px 16px rgba(0,0,0,.4);font-family:inherit;text-align:center;";
+        document.body.appendChild(banner);
+    }
+    const yourTurn = gameState.playerName === gameState.currentPlayer;
+    banner.textContent = yourTurn
+        ? `⏱ Play within ${remaining}s or you'll be removed from the game`
+        : `⏱ Waiting for ${gameState.currentPlayer} — auto-removed in ${remaining}s`;
 }
 
 // === 8. EVENT LISTENERS ===
 function setupEventListeners() {
     DOM.playBtn.addEventListener("click", async () => {
-        if (!gameState.drawSource) return alert("Choose draw source.");
+        if (!gameState.drawSource) return alert("Choose a draw source (deck or pile).");
         if (gameState.selectedOrder.length === 0) return alert("Select cards to play.");
 
         const selectedCards = gameState.selectedOrder.map(idx => gameState.hand[idx]);
-        const res = await fetch("/play", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({cards: selectedCards, draw: gameState.drawSource})
-        });
-
-        const result = await res.json();
-        if (!res.ok) {
-            gameState.selectedOrder = [];
-            gameState.drawSource = null;
-            return alert(result.error || "Invalid move.");
+        let res, result;
+        try {
+            res = await fetch("/play", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({cards: selectedCards, draw: gameState.drawSource})
+            });
+            result = await res.json().catch(() => ({}));
+        } catch (e) {
+            return alert("Network error — please try again.");
         }
 
         gameState.selectedOrder = [];
         gameState.drawSource = null;
+        if (!res.ok) return alert(result.error || "Invalid move.");
         await loadState();
     });
 
     DOM.endBtn.addEventListener("click", async () => {
-        const res = await fetch("/end-round", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"}
-        });
-
-        if (!res.ok) return alert("Could not end round.");
+        let res, result;
+        try {
+            res = await fetch("/end-round", {method: "POST", headers: {"Content-Type": "application/json"}});
+            result = await res.json().catch(() => ({}));   // 204 success has no body
+        } catch (e) {
+            return alert("Network error — please try again.");
+        }
+        if (!res.ok) return alert(result.error || "Could not end round.");
 
         gameState.selectedOrder = [];
         gameState.drawSource = null;
         clearSessionLog();
-
         await loadState();
     });
 
-    DOM.endGameBtn?.addEventListener("click", async () => {
-        const confirmEnd = confirm("Are you sure you want to end the game for everyone?");
-        if (!confirmEnd) return;
-        quitGameAndRedirect();
+    DOM.endGameBtn?.addEventListener("click", () => {
+        if (confirmLeave()) quitGameAndRedirect();
     });
 
     document.addEventListener("mousedown", (e) => {
         const card = e.target.closest(".joker-card, playing-card");
         if (card?.dataset.index !== undefined && e.button === 0) {
-            const idx = parseInt(card.dataset.index);
-            const i = gameState.selectedOrder.indexOf(idx);
-            if (i !== -1) {
-                gameState.selectedOrder.splice(i, 1);
-            } else {
-                gameState.selectedOrder.push(idx);
-            }
-            loadState()
+            toggleCardSelection(parseInt(card.dataset.index, 10));
             e.preventDefault();
         }
     });
 
     DOM.deckEl.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return;
-        gameState.drawSource = gameState.drawSource === "deck" ? null : "deck";
-        updateDeckDisplay();
-        updatePileDisplay();
+        toggleDrawSource("deck");
         e.preventDefault();
     });
 
     DOM.pileEl.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return;
-        gameState.drawSource = gameState.drawSource === "pile" ? null : "pile";
-        updateDeckDisplay();
-        updatePileDisplay();
+        toggleDrawSource("pile");
         e.preventDefault();
+    });
+
+    // === Keyboard shortcuts ===
+    // 1-9 / 0 toggle a card by position (0 = the 10th card) · Enter play · F finish
+    // · D draw deck · P draw pile · Esc clear selection. On the round-end popup,
+    // Enter or R presses Ready.
+    document.addEventListener("keydown", (e) => {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        const tag = (e.target.tagName || "").toUpperCase();
+        if (tag === "INPUT" || tag === "TEXTAREA") return;
+
+        if (document.getElementById("round-popup")) {
+            if (e.key === "Enter" || e.key.toLowerCase() === "r") {
+                document.getElementById("round-ready-btn")?.click();
+                e.preventDefault();
+            }
+            return;
+        }
+
+        const isYourTurn = gameState.playerName === gameState.currentPlayer && !gameState.roundEnded;
+
+        if (e.key >= "0" && e.key <= "9") {
+            // 1-9 select positions 1-9; 0 selects the 10th card (max hand size).
+            const idx = e.key === "0" ? 9 : parseInt(e.key, 10) - 1;
+            if (idx < gameState.hand.length) toggleCardSelection(idx);
+            e.preventDefault();
+            return;
+        }
+        switch (e.key.toLowerCase()) {
+            case "enter":  if (isYourTurn && !DOM.playBtn.disabled) DOM.playBtn.click(); e.preventDefault(); break;
+            case "f":      if (!DOM.endBtn.disabled) DOM.endBtn.click(); e.preventDefault(); break;
+            case "d":      if (isYourTurn) toggleDrawSource("deck"); e.preventDefault(); break;
+            case "p":      if (isYourTurn) toggleDrawSource("pile"); e.preventDefault(); break;
+            case "escape": gameState.selectedOrder = []; gameState.drawSource = null; loadState(); e.preventDefault(); break;
+        }
     });
 
     document.addEventListener("dragstart", e => e.preventDefault());

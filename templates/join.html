@@ -83,6 +83,7 @@
 
       const names = data.players || [];
       const ready = data.ready || {};
+      const host = data.host;
       readyState = !!ready[playerName];
       updateReadyButton();
 
@@ -90,9 +91,10 @@
       list.innerHTML = names.map(name => {
         const on = ready[name];
         const initial = (name[0] || "?").toUpperCase();
+        const crown = name === host ? ' <span title="Host">👑</span>' : '';
         return `<li>
           <span class="avatar" style="background:${on ? 'var(--accent)' : 'var(--bg-elevated-2)'};color:${on ? 'var(--text-on-accent)' : 'var(--text-secondary)'}">${initial}</span>
-          <span class="nm">${name}${name === playerName ? ' <span style="color:var(--text-muted)">(you)</span>' : ''}</span>
+          <span class="nm">${name}${crown}${name === playerName ? ' <span style="color:var(--text-muted)">(you)</span>' : ''}</span>
           <span class="ready-pill ${on ? 'on' : 'off'}">${on ? '✓ Ready' : 'Not ready'}</span>
         </li>`;
       }).join("");

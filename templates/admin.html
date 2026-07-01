@@ -19,7 +19,49 @@
 
     <div class="hero" style="padding:1rem 0 1.5rem">
       <h1>🛡 Admin</h1>
-      <p>Clean up games and accounts.</p>
+      <p>Clean up games and accounts, and tune the game rules.</p>
+    </div>
+
+    <h2 class="section-title">Game rules</h2>
+    <div class="panel" style="padding:1rem">
+      <form method="POST" action="/admin/rules">
+        <div class="rules-grid">
+          <label>
+            <span>Finish threshold</span>
+            <input type="number" name="finish_max" value="{{ rules.finish_max.value }}"
+                   min="{{ rules.finish_max.min }}" max="{{ rules.finish_max.max }}" step="1" required>
+            <small>Highest hand value you may “Finish” a round with.</small>
+          </label>
+          <label>
+            <span>Game-over score</span>
+            <input type="number" name="game_over_score" value="{{ rules.game_over_score.value }}"
+                   min="{{ rules.game_over_score.min }}" max="{{ rules.game_over_score.max }}" step="1" required>
+            <small>Reaching this total score ends the game.</small>
+          </label>
+          <label>
+            <span>Cards per hand</span>
+            <input type="number" name="hand_size" value="{{ rules.hand_size.value }}"
+                   min="{{ rules.hand_size.min }}" max="{{ rules.hand_size.max }}" step="1" required>
+            <small>Cards dealt to each player ({{ rules.hand_size.min }}–{{ rules.hand_size.max }}).</small>
+          </label>
+          <label>
+            <span>Turn timeout (s)</span>
+            <input type="number" name="turn_timeout" value="{{ rules.turn_timeout.value }}"
+                   min="{{ rules.turn_timeout.min }}" max="{{ rules.turn_timeout.max }}" step="1" required>
+            <small>Idle seconds before the current player is auto-removed so the table isn’t frozen.</small>
+          </label>
+          <label>
+            <span>Turn warning (s)</span>
+            <input type="number" name="turn_warn" value="{{ rules.turn_warn.value }}"
+                   min="{{ rules.turn_warn.min }}" max="{{ rules.turn_warn.max }}" step="1" required>
+            <small>Idle seconds before the removal countdown appears (kept below the timeout).</small>
+          </label>
+        </div>
+        <div style="margin-top:1rem">
+          <button class="btn btn--primary" type="submit">Save rules</button>
+          <span style="color:var(--text-muted);margin-left:0.75rem">Applies to games started from now on.</span>
+        </div>
+      </form>
     </div>
 
     <h2 class="section-title">

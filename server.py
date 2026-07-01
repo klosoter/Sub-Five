@@ -9,6 +9,7 @@ import contextlib
 from datetime import timedelta
 
 from game import Game, Card, sort_hand, build_game_over_notice
+import game as game_rules  # module handle for overriding the tunable rule numbers
 
 from flask_login import (
     LoginManager, login_user, logout_user, login_required, current_user,
@@ -32,6 +33,42 @@ _redis_url = os.environ.get("REDIS_URL")
 if not _redis_url:
     raise RuntimeError("REDIS_URL must be set (e.g. fly secrets set REDIS_URL=redis://...)")
 redis_client = redis.from_url(_redis_url, decode_responses=True)
+
+# ---------------- Configurable game rules (admin-editable) ----------------
+# Persisted in Redis (shared across workers). Each entry is (default, min, max).
+# game.py reads these at runtime via _apply_rules(); if Redis is unavailable we
+# fall back to the defaults so play never breaks.
+RULE_SPECS = {
+    "finish_max":      (5,   1, 999),   # highest hand value with which you may Finish
+    "game_over_score": (100, 1, 999),   # total score that ends the game
+    "hand_size":       (5,   1, 10),    # cards dealt to each player
+    "turn_timeout":    (90, 15, 600),   # seconds before an idle current player is auto-removed
+    "turn_warn":       (30,  5, 599),   # seconds of idle before the removal-countdown warning appears
+}
+
+
+def _get_rule(key):
+    default = RULE_SPECS[key][0]
+    try:
+        raw = redis_client.get(f"config:rule:{key}")
+        return int(raw) if raw is not None else default
+    except Exception:
+        return default
+
+
+def _set_rule(key, value):
+    """Validate against RULE_SPECS and persist. Returns the clamped int stored."""
+    _, lo, hi = RULE_SPECS[key]
+    value = max(lo, min(hi, int(value)))
+    redis_client.set(f"config:rule:{key}", str(value))
+    return value
+
+
+def _apply_rules():
+    """Push the current rule numbers into the game module before it deals/scores."""
+    game_rules.FINISH_MAX = _get_rule("finish_max")
+    game_rules.GAME_OVER_SCORE = _get_rule("game_over_score")
+    game_rules.HAND_SIZE = _get_rule("hand_size")
 
 # ---------------- Auth (Flask-Login + SQLite) ----------------
 init_db(app)
@@ -103,6 +140,12 @@ def _rl_hit(*keys):
 ROOM_PREFIX = "room:"
 ROOM_TTL_SECONDS = 3600
 MAX_PLAYERS = 4  # the table UI seats at most 4 and the 54-card deck deals for <=4
+
+# The turn-timeout / warning thresholds live in RULE_SPECS ("turn_timeout" /
+# "turn_warn") so they're admin-editable at runtime — read them with _get_rule().
+# A player who holds the turn without acting past turn_timeout (e.g. closed their
+# tab or logged out mid-game) is auto-removed so the table isn't frozen; the client
+# shows a warning countdown once turn_warn seconds have elapsed.
 
 # ---------------- Utility functions ----------------
 
@@ -215,32 +258,63 @@ def _remove_player_from_game(game, name):
     return len(game.players)
 
 
+def _host_name(room):
+    """Display name of the room's host (whose user_id == room['host']), or None."""
+    host_id = room.get("host")
+    for name, uid in room.get("user_ids", {}).items():
+        if uid == host_id:
+            return name
+    return None
+
+
+def _drop_member(room, name):
+    """Remove `name` from an in-memory room dict: the seat list, ready set, user_id
+    map and — if the game has started — the game seat + turn pointer. If the leaver
+    was the host, the crown moves to another seated player. Returns the number of
+    players still seated (the caller persists or deletes the room under the lock).
+
+    The rules/scoring/turn-rotation in game.py stay untouched — only seats move."""
+    if name not in room.get("players", []):
+        return len(room.get("players", []))
+    leaving_uid = room.get("user_ids", {}).get(name)
+
+    room["players"].remove(name)
+    room.get("ready", {}).pop(name, None)
+    room.get("user_ids", {}).pop(name, None)
+
+    remaining = len(room["players"])
+    if remaining and room.get("started") and room.get("game"):
+        g = room["game"]
+        if isinstance(g, dict):
+            g = Game.deserialize(g)
+        remaining = _remove_player_from_game(g, name)
+        store_game_in_room(room, g)          # rewrites room["game"] + room["players"]
+        room["last_action_at"] = time.time()  # fresh clock for whoever is now on turn
+
+    # Hand the crown to someone still seated if the host is the one who left.
+    if leaving_uid is not None and room.get("host") == leaving_uid:
+        players = room.get("players", [])
+        room["host"] = room.get("user_ids", {}).get(players[0]) if players else None
+
+    return remaining
+
+
 def _do_leave(code, name):
     """Remove `name` from room `code` under the room lock. The rest keep playing;
-    the room is deleted if fewer than 2 players remain. Shared by /leave and
-    account deletion so a departing player never lingers in a game."""
+    the room is deleted if fewer than 2 players remain (or none, in the lobby).
+    Shared by /leave, /logout, /create, /join and account deletion so a departing
+    player never lingers as a ghost seat."""
     if not code or not name:
         return
     with room_lock(code):
         room = load_room(code)
         if not room or name not in room.get("players", []):
             return
-        room["players"].remove(name)
-        room["ready"].pop(name, None)
-        room.get("user_ids", {}).pop(name, None)
-        if not room["players"]:
+        remaining = _drop_member(room, name)
+        floor = 2 if room.get("started") else 1
+        if remaining < floor:
             delete_room(code)
             redis_client.delete(_recorded_key(code))
-        elif room.get("started") and room.get("game"):
-            g = room["game"]
-            if isinstance(g, dict):
-                g = Game.deserialize(g)
-            if _remove_player_from_game(g, name) < 2:
-                delete_room(code)
-                redis_client.delete(_recorded_key(code))
-            else:
-                store_game_in_room(room, g)
-                save_room(code, room)
         else:
             save_room(code, room)
 
@@ -439,6 +513,9 @@ def logout():
     # Drop our own keys first; logout_user() then clears the login session AND
     # queues the remember-me cookie for deletion. Do NOT session.clear() after
     # it — that would wipe the remember-clear flag and re-login on next request.
+    # Remove ourselves from any game first, so logging out mid-game doesn't leave
+    # a ghost seat that freezes the table for everyone else.
+    _do_leave(session.get("room"), session.get("player_name"))
     session.pop("room", None)
     session.pop("player_name", None)
     logout_user()
@@ -526,7 +603,31 @@ def admin_page():
         }
         for code, room in list_rooms()
     ]
-    return render_template("admin.html", user=current_user, rooms=rooms, users=User.all_users())
+    rules = {k: {"value": _get_rule(k), "min": spec[1], "max": spec[2]}
+             for k, spec in RULE_SPECS.items()}
+    return render_template("admin.html", user=current_user, rooms=rooms,
+                           users=User.all_users(), rules=rules)
+
+
+@app.route("/admin/rules", methods=["POST"])
+@login_required
+def admin_update_rules():
+    if not _is_admin():
+        return redirect("/")
+    # Each field is validated and clamped against RULE_SPECS in _set_rule; a blank
+    # or non-numeric field is left unchanged so a partial save can't wipe a rule.
+    for key in RULE_SPECS:
+        raw = request.form.get(key, "").strip()
+        if raw == "":
+            continue
+        try:
+            _set_rule(key, raw)
+        except (ValueError, TypeError):
+            continue
+    # The warning must fire before the removal, else there's no countdown window.
+    if _get_rule("turn_warn") >= _get_rule("turn_timeout"):
+        _set_rule("turn_warn", _get_rule("turn_timeout") - 1)
+    return redirect("/admin")
 
 
 @app.route("/admin/delete-room/<code>", methods=["POST"])
@@ -568,19 +669,30 @@ def admin_delete_user(user_id):
 @app.route("/")
 @login_required
 def home():
+    my_name = current_user.display_name
     rooms = []
+    my_game = None
     for code, room in list_rooms():
-        if not room.get("players"):
+        names = extract_player_names(room.get("players", []))
+        if not names:
             continue  # hide empty rooms (creator not seated yet / abandoned)
         rooms.append({
             "code": code,
-            "players": extract_player_names(room.get("players", [])),
+            "players": names,
             "started": room.get("started", False),
             "is_host": room.get("host") == current_user.id,
         })
+        if my_name in names and my_game is None:
+            my_game = {"code": code, "started": room.get("started", False),
+                       "is_host": room.get("host") == current_user.id}
+    if my_game:
+        # Restore the session pointer to the game we're actually seated in, so the
+        # Rejoin/Leave banner and the Create/Leave guards all target the right room.
+        session["room"] = my_game["code"]
+        session["player_name"] = my_name
     return render_template(
         "home.html", room_list=rooms, user=current_user, is_admin=_is_admin(),
-        stats=current_user.stats(), leaders=get_leaderboard(limit=10),
+        stats=current_user.stats(), leaders=get_leaderboard(limit=10), my_game=my_game,
     )
 
 
@@ -603,6 +715,9 @@ def room_list_json():
 @login_required
 def create_room():
     """Create a new room and redirect to its join page."""
+    # Leave any current game before starting a new one, so we don't orphan a ghost
+    # seat in the old room.
+    _do_leave(session.get("room"), session.get("player_name"))
     session.pop("room", None)
     session.pop("player_name", None)
     code = str(uuid.uuid4())[:6].upper()
@@ -623,6 +738,11 @@ def create_room():
 def join_room(code):
     # Identity comes from the authenticated account, never from client input.
     name = current_user.display_name
+    # Leaving a different room first prevents ghosting the old game. (Guard on the
+    # code so re-opening the room you're already in doesn't remove you from it.)
+    prev = session.get("room")
+    if prev and prev != code:
+        _do_leave(prev, session.get("player_name"))
     with room_lock(code):
         room = load_room(code)
         if not room:
@@ -660,9 +780,11 @@ def toggle_ready(code):
         all_ready = all(room["ready"].values()) and len(room["players"]) >= 2
         if all_ready and not room.get("started"):
             player_names = [p["name"] if isinstance(p, dict) else p for p in room["players"]]
+            _apply_rules()  # deal HAND_SIZE cards per the current admin settings
             game = Game(player_names)
             store_game_in_room(room, game)
             room["started"] = True
+            room["last_action_at"] = time.time()  # start the first turn clock
             redis_client.delete(_recorded_key(code))  # fresh match can be recorded
             save_room(code, room)
             return jsonify({"status": "started"})
@@ -685,7 +807,8 @@ def room_state(code):
     return jsonify({
         "players": room.get("players", []),
         "ready": room.get("ready", {}),
-        "started": room.get("started", False)
+        "started": room.get("started", False),
+        "host": _host_name(room),
     })
 
 
@@ -773,6 +896,33 @@ def state():
             game = Game.deserialize(game)
             room["game"] = game
 
+        _apply_rules()  # keep deal size / thresholds current for the fallback reset + response
+
+        # Auto-remove a player who has held the turn past the timeout (tab closed /
+        # logged out) so the table isn't frozen. The present players' own polls drive
+        # this — no background worker. _drop_member advances the turn and migrates the
+        # host; if that drops us below 2 players the room closes.
+        now = time.time()
+        if (not game.round_ended and not game.game_over and len(game.players) >= 2
+                and now - room.get("last_action_at", now) >= _get_rule("turn_timeout")):
+            _drop_member(room, game.current_player().name)
+            if len(room.get("players", [])) < 2:
+                delete_room(code)
+                redis_client.delete(_recorded_key(code))
+                session.pop("room", None)
+                session.pop("player_name", None)
+                return jsonify({"error": "Invalid session"}), 400
+            save_room(code, room)
+            if player_name not in room.get("players", []):
+                # We were the idle one who got removed (present but past the limit).
+                session.pop("room", None)
+                session.pop("player_name", None)
+                return jsonify({"error": "Invalid session"}), 400
+            game = room["game"]
+            if isinstance(game, dict):
+                game = Game.deserialize(game)
+                room["game"] = game
+
         changed = False
 
         # Show the game-over popup once per player, then clear it.
@@ -802,6 +952,7 @@ def state():
             game.ready_players = set()
             game.round_ended = False
             game.last_action = None
+            room["last_action_at"] = time.time()  # new round -> fresh turn clock
             changed = True
 
         # Only rewrite the room blob when this poll actually changed state; the
@@ -851,6 +1002,12 @@ def state():
         "roundSummaryPopup": getattr(game, "round_summary_html", ""),
         "gameOver": game.game_over,
         "gameOverNotice": gameOverNotice,
+        "finishThreshold": game_rules.FINISH_MAX,
+        "hostName": _host_name(room),
+        "isHost": room.get("host") == current_user.id,
+        "turnElapsed": int(max(0, time.time() - room.get("last_action_at", time.time()))),
+        "turnWarnAt": _get_rule("turn_warn"),
+        "turnTimeout": _get_rule("turn_timeout"),
     })
 
 
@@ -906,6 +1063,7 @@ def handle_play_cards():
                 "drawn_card": str(drawn),
                 "draw_source": draw,
             }
+            room["last_action_at"] = time.time()  # turn advanced -> reset the clock
             store_game_in_room(room, game)
             save_room(code, room)
             return jsonify({"status": "OK"})
@@ -932,6 +1090,8 @@ def end_round():
             game = Game.deserialize(game)
         room["game"] = game  # keep deserialized for now
 
+        _apply_rules()  # thresholds for the Finish gate + is_game_over below
+
         # A round may only be ended once — blocks a re-submitted /end-round from
         # re-scoring or double-recording an already-finished game.
         if game.round_ended:
@@ -941,12 +1101,13 @@ def end_round():
         if game.current_player().name != player:
             return jsonify({"error": "It's not your turn."}), 400
 
-        # Enforce the ≤5 Finish rule server-side too, so a hacked/desynced client
-        # can't end with a big hand. This reads the engine's own hand_value() —
-        # game.py's rules are unchanged, and a legitimate client (whose Finish
-        # button is disabled above 5) never trips this.
-        if game.current_player().hand_value() > 5:
-            return jsonify({"error": "You can only Finish with 5 points or fewer."}), 400
+        # Enforce the Finish threshold server-side too, so a hacked/desynced client
+        # can't end with a big hand. This reads the engine's own hand_value() and the
+        # admin-configured limit — a legitimate client (whose Finish button is
+        # disabled above the limit) never trips this.
+        finish_max = game_rules.FINISH_MAX
+        if game.current_player().hand_value() > finish_max:
+            return jsonify({"error": f"You can only Finish with {finish_max} points or fewer."}), 400
 
         try:
             hands, hand_values, scores, penalty_applied = game.end_game(player)
@@ -997,6 +1158,8 @@ def ready_next_round():
             game = Game.deserialize(game)
         room["game"] = game  # allow mutation
 
+        _apply_rules()  # HAND_SIZE for the reset deal below
+
         if not game.round_ended:
             return jsonify({"error": "Round not ended"}), 400
 
@@ -1014,6 +1177,7 @@ def ready_next_round():
             game.reset_for_next_round()
             game.round_ended = False
             game.last_action = None
+            room["last_action_at"] = time.time()  # new round -> fresh turn clock
         store_game_in_room(room, game)
         save_room(code, room)
 

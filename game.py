@@ -20,6 +20,14 @@ CARD_VALUES = {
     JOKER: 0
 }
 
+# === Configurable rule numbers ===
+# These are the game's tunable thresholds. Defaults preserve the original rules;
+# the server overrides them at runtime from the admin settings (see
+# server.py::_apply_rules) before any deal or round/game-end evaluation.
+FINISH_MAX = 5          # highest hand value with which a player may "Finish" a round
+GAME_OVER_SCORE = 100   # total score that ends the whole game
+HAND_SIZE = 5           # number of cards dealt to each player
+
 # === Card Utilities ===
 def card_sort_key(card):
     if card.rank == JOKER:
@@ -141,7 +149,7 @@ class Player:
         return sum(card.value() for card in self.hand)
 
     def can_end_game(self):
-        return self.hand_value() <= 100
+        return self.hand_value() <= FINISH_MAX
 
 # === Game Logic ===
 class Game:
@@ -209,7 +217,7 @@ class Game:
         return {p.name: p.score for p in self.players}
 
     def deal_initial_hands(self):
-        for _ in range(5):
+        for _ in range(HAND_SIZE):
             for player in self.players:
                 player.draw_card(self.draw_card())
         self.play_pile.append(self.draw_card())
@@ -254,20 +262,20 @@ class Game:
 
 
     def determine_winners(self):
-        if all(p.score < 100 for p in self.players):
+        if all(p.score < GAME_OVER_SCORE for p in self.players):
             return []
         min_score = min(p.score for p in self.players)
         return [(p.name, p.score) for p in self.players if p.score == min_score]
 
     def is_game_over(self):
-        return any(p.score >= 100 for p in self.players)
+        return any(p.score >= GAME_OVER_SCORE for p in self.players)
 
     def end_game(self, ending_player_name):
         ending_player = next((p for p in self.players if p.name == ending_player_name), None)
         if not ending_player:
             raise ValueError("Player not found.")
         if not ending_player.can_end_game():
-            raise ValueError("You may only end the round with 5 points or fewer.")
+            raise ValueError(f"You may only end the round with {FINISH_MAX} points or fewer.")
 
         if self.is_game_over():
             self.game_over = True
@@ -303,7 +311,7 @@ class Game:
         self.play_pile = [self.deck.draw()]
         for player in self.players:
             player.hand = []
-            for _ in range(5):
+            for _ in range(HAND_SIZE):
                 player.draw_card(self.deck.draw())
 
 #         self.current_player_index = min(
