@@ -82,14 +82,22 @@ def _client_ip():
 
 
 def _rl_over(*keys):
-    return any(int(redis_client.get(k) or 0) >= LOGIN_MAX_ATTEMPTS for k in keys)
+    # Fail OPEN: a Redis outage must never block or 500 the login page. Rate
+    # limiting is best-effort, so if Redis is unavailable we simply don't limit.
+    try:
+        return any(int(redis_client.get(k) or 0) >= LOGIN_MAX_ATTEMPTS for k in keys)
+    except Exception:
+        return False
 
 
 def _rl_hit(*keys):
-    for k in keys:
-        n = redis_client.incr(k)
-        if n == 1:
-            redis_client.expire(k, LOGIN_WINDOW_SECONDS)
+    try:
+        for k in keys:
+            n = redis_client.incr(k)
+            if n == 1:
+                redis_client.expire(k, LOGIN_WINDOW_SECONDS)
+    except Exception:
+        pass
 
 # Constants
 ROOM_PREFIX = "room:"
@@ -384,7 +392,10 @@ def login_page():
                 "auth.html", mode="login", error="Invalid username or password.",
                 username=request.form.get("username", ""), next=nxt,
             ), 401
-        redis_client.delete(user_key)  # clear the per-user counter on success
+        try:
+            redis_client.delete(user_key)  # clear the per-user counter on success
+        except Exception:
+            pass
         session.clear()  # rotate: don't carry a pre-auth session across login
         login_user(user, remember=True)
         user.touch()
