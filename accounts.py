@@ -287,3 +287,44 @@ def record_match(room_code, players, rounds_played=0):
         )
     db.commit()
     return match_id
+
+
+# ---- admin match-history management --------------------------------------
+# Stats, wins, the leaderboard and profile history are all derived from the
+# matches / match_players tables, so deleting match rows resets those records.
+
+def recent_matches(limit=100):
+    """Recent finished matches for the admin panel, newest first."""
+    rows = get_db().execute(
+        """
+        SELECT m.id, m.room_code, m.ended_at, m.rounds,
+               (SELECT GROUP_CONCAT(mp.display_name || ' (' || mp.final_score || ')', ', ')
+                FROM match_players mp WHERE mp.match_id = m.id) AS players,
+               (SELECT w.display_name FROM match_players w
+                WHERE w.match_id = m.id AND w.is_winner = 1 LIMIT 1) AS winner
+        FROM matches m
+        ORDER BY m.ended_at DESC, m.rowid DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_match(match_id):
+    """Delete a single match; its match_players rows cascade away."""
+    db = get_db()
+    db.execute("DELETE FROM matches WHERE id = ?", (match_id,))
+    db.commit()
+
+
+def clear_all_matches():
+    """Wipe ALL match history — resets every player's stats and the leaderboard.
+    Accounts themselves are untouched. Returns the number of matches removed."""
+    db = get_db()
+    n = db.execute("SELECT COUNT(*) AS c FROM matches").fetchone()["c"]
+    # Delete both tables explicitly so it works even if FK cascade were ever off.
+    db.execute("DELETE FROM match_players")
+    db.execute("DELETE FROM matches")
+    db.commit()
+    return n

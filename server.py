@@ -15,7 +15,8 @@ from flask_login import (
     LoginManager, login_user, logout_user, login_required, current_user,
 )
 from db import init_db
-from accounts import User, ValidationError, AVATAR_COLORS, leaderboard as get_leaderboard, record_match
+from accounts import (User, ValidationError, AVATAR_COLORS, leaderboard as get_leaderboard,
+                      record_match, recent_matches, delete_match, clear_all_matches)
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -606,7 +607,26 @@ def admin_page():
     rules = {k: {"value": _get_rule(k), "min": spec[1], "max": spec[2]}
              for k, spec in RULE_SPECS.items()}
     return render_template("admin.html", user=current_user, rooms=rooms,
-                           users=User.all_users(), rules=rules)
+                           users=User.all_users(), rules=rules,
+                           matches=recent_matches())
+
+
+@app.route("/admin/delete-match/<match_id>", methods=["POST"])
+@login_required
+def admin_delete_match(match_id):
+    if not _is_admin():
+        return redirect("/")
+    delete_match(match_id)
+    return redirect("/admin")
+
+
+@app.route("/admin/clear-matches", methods=["POST"])
+@login_required
+def admin_clear_matches():
+    if not _is_admin():
+        return redirect("/")
+    clear_all_matches()  # resets all stats + the leaderboard; accounts are kept
+    return redirect("/admin")
 
 
 @app.route("/admin/rules", methods=["POST"])
